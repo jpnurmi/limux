@@ -416,6 +416,26 @@ extern "C" {
     pub fn glViewport(x: c_int, y: c_int, width: c_int, height: c_int);
 }
 
+// libghostty.so references these glad functions but Ghostty only compiles
+// glad into executables, not shared libs. The symbols live in libglad.a
+// but get garbage-collected by the linker because nothing in the Rust code
+// references them. The statics below force the linker to pull gl.o from
+// the archive and keep the symbols alive.
+extern "C" {
+    fn gladLoaderLoadGLContext(context: *mut c_void) -> c_int;
+    fn gladLoaderUnloadGLContext(context: *mut c_void);
+}
+
+#[used]
+#[no_mangle]
+#[link_section = ".limux.glad"]
+static _LIMUX_GLAD_LOAD: unsafe extern "C" fn(*mut c_void) -> c_int = gladLoaderLoadGLContext;
+
+#[used]
+#[no_mangle]
+#[link_section = ".limux.glad"]
+static _LIMUX_GLAD_UNLOAD: unsafe extern "C" fn(*mut c_void) = gladLoaderUnloadGLContext;
+
 extern "C" {
     // Init
     pub fn ghostty_init(argc: usize, argv: *mut *mut c_char) -> c_int;
