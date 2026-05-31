@@ -1337,11 +1337,12 @@ const CONTENT_BACKGROUND_RGB: (u8, u8, u8) = (23, 23, 23);
 
 fn app_css(background_opacity: f64, config: &app_config::AppConfig) -> String {
     format!(
-        "{}\n{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}\n{}",
         build_window_css(background_opacity),
         pane::PANE_CSS,
         keybind_editor::KEYBIND_EDITOR_CSS,
         crate::settings_editor::SETTINGS_CSS,
+        crate::terminal::TERMINAL_CSS,
         crate::settings_editor::ui_scale_css(config),
     )
 }
