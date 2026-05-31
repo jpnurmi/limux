@@ -291,6 +291,8 @@ pub enum FocusedShortcutTarget {
 #[derive(Clone)]
 struct TabContextMenuContext {
     tab_strip: gtk::Box,
+    header: gtk::Box,
+    float_bar: gtk::Box,
     content_stack: gtk::Stack,
     tab_state: Rc<RefCell<TabState>>,
     callbacks: Rc<PaneCallbacks>,
@@ -422,6 +424,11 @@ pub const PANE_CSS: &str = r#"
 .limux-drop-preview-center {
     background: alpha(@accent_bg_color, 0.14);
 }
+.limux-float-bar {
+    background: transparent;
+    border: none;
+    padding: 2px;
+}
 "#;
 
 // ---------------------------------------------------------------------------
@@ -488,6 +495,7 @@ pub fn create_pane(
     // Action icons (right side)
     let actions = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
+        .halign(gtk::Align::End)
         .spacing(1)
         .build();
 
@@ -530,6 +538,52 @@ pub fn create_pane(
     outer.append(&header);
     outer.append(&content_overlay);
 
+    // Floating action bar overlaid in the terminal corner when header is hidden
+    let float_bar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(1)
+        .halign(gtk::Align::End)
+        .valign(gtk::Align::Start)
+        .margin_top(4)
+        .margin_end(4)
+        .visible(false)
+        .build();
+    float_bar.add_css_class("limux-float-bar");
+    content_overlay.add_overlay(&float_bar);
+
+    let float_new_term_btn = icon_button(
+        "utilities-terminal-symbolic",
+        &pane_action_tooltip(
+            &shortcuts,
+            "New terminal tab",
+            Some(ShortcutId::NewTerminal),
+        ),
+    );
+    let float_new_browser_btn = icon_button(
+        "limux-globe-symbolic",
+        &pane_action_tooltip(&shortcuts, "New browser tab", None),
+    );
+    let float_split_h_btn = icon_button(
+        "limux-split-horizontal-symbolic",
+        &pane_action_tooltip(&shortcuts, "Split right", Some(ShortcutId::SplitRight)),
+    );
+    let float_split_v_btn = icon_button(
+        "limux-split-vertical-symbolic",
+        &pane_action_tooltip(&shortcuts, "Split down", Some(ShortcutId::SplitDown)),
+    );
+    let float_settings_btn = icon_button("emblem-system-symbolic", "Settings");
+    let float_close_btn = icon_button(
+        "window-close-symbolic",
+        &pane_action_tooltip(&shortcuts, "Close pane", Some(ShortcutId::CloseFocusedPane)),
+    );
+
+    float_bar.append(&float_new_term_btn);
+    float_bar.append(&float_new_browser_btn);
+    float_bar.append(&float_split_h_btn);
+    float_bar.append(&float_split_v_btn);
+    float_bar.append(&float_settings_btn);
+    float_bar.append(&float_close_btn);
+
     let ws_wd = Rc::new(RefCell::new(
         working_directory.map(|value| value.to_string()),
     ));
@@ -544,6 +598,8 @@ pub fn create_pane(
         pane_id,
         tab_state: tab_state.clone(),
         tab_strip: tab_strip.clone(),
+        header: header.clone(),
+        float_bar: float_bar.clone(),
         content_stack: content_stack.clone(),
         drop_indicator: drop_indicator.clone(),
         content_drop_overlay: content_drop_overlay.clone(),
@@ -601,6 +657,57 @@ pub fn create_pane(
     {
         let internals = internals.clone();
         settings_btn.connect_clicked(move |_| {
+            settings_editor::present_settings_dialog(
+                &internals.pane_outer,
+                settings_editor::SettingsEditorInput {
+                    config: (internals.callbacks.current_config)(),
+                    shortcuts: (internals.callbacks.current_shortcuts)(),
+                    on_capture: internals.callbacks.on_capture_shortcut.clone(),
+                    on_config_changed: internals.callbacks.on_config_changed.clone(),
+                },
+            );
+        });
+    }
+
+    // Wire float bar button signals
+    {
+        let internals = internals.clone();
+        let wd = ws_wd.clone();
+        float_new_term_btn.connect_clicked(move |_| {
+            let dir = wd.borrow().clone();
+            add_terminal_tab_inner(&internals, dir.as_deref(), None);
+        });
+    }
+    {
+        let internals = internals.clone();
+        float_new_browser_btn.connect_clicked(move |_| {
+            add_browser_tab_inner(&internals, None);
+        });
+    }
+    {
+        let pw = outer.clone();
+        let cb = callbacks.clone();
+        float_split_h_btn.connect_clicked(move |_| {
+            (cb.on_split)(&pw.clone().upcast(), gtk::Orientation::Horizontal);
+        });
+    }
+    {
+        let pw = outer.clone();
+        let cb = callbacks.clone();
+        float_split_v_btn.connect_clicked(move |_| {
+            (cb.on_split)(&pw.clone().upcast(), gtk::Orientation::Vertical);
+        });
+    }
+    {
+        let pw = outer.clone();
+        let cb = callbacks.clone();
+        float_close_btn.connect_clicked(move |_| {
+            (cb.on_close_pane)(&pw.clone().upcast());
+        });
+    }
+    {
+        let internals = internals.clone();
+        float_settings_btn.connect_clicked(move |_| {
             settings_editor::present_settings_dialog(
                 &internals.pane_outer,
                 settings_editor::SettingsEditorInput {
@@ -721,6 +828,8 @@ pub fn close_tab_in_pane(pane_widget: &gtk::Widget, tab_id: &str) -> bool {
 
     remove_tab(
         &internals.tab_strip,
+        &internals.header,
+        &internals.float_bar,
         &internals.content_stack,
         &internals.tab_state,
         tab_id,
@@ -922,6 +1031,8 @@ pub struct PaneInternals {
     pane_id: u32,
     tab_state: Rc<std::cell::RefCell<TabState>>,
     tab_strip: gtk::Box,
+    header: gtk::Box,
+    float_bar: gtk::Box,
     content_stack: gtk::Stack,
     drop_indicator: gtk::Box,
     content_drop_overlay: gtk::Box,
@@ -1129,6 +1240,8 @@ fn make_terminal_callbacks(
     let callbacks_for_keybinds = internals.callbacks.clone();
     let callbacks_for_identity = internals.callbacks.clone();
     let tab_strip = internals.tab_strip.clone();
+    let header = internals.header.clone();
+    let float_bar = internals.float_bar.clone();
     let content_stack = internals.content_stack.clone();
     let tab_state = internals.tab_state.clone();
     let pane_outer = internals.pane_outer.clone();
@@ -1174,6 +1287,8 @@ fn make_terminal_callbacks(
         }),
         on_close: Box::new(move || {
             let tab_strip = tab_strip.clone();
+            let header = header.clone();
+            let float_bar = float_bar.clone();
             let content_stack = content_stack.clone();
             let tab_state = tab_state.clone();
             let callbacks = callbacks_for_close.clone();
@@ -1182,6 +1297,8 @@ fn make_terminal_callbacks(
             glib::idle_add_local_once(move || {
                 remove_tab(
                     &tab_strip,
+                    &header,
+                    &float_bar,
                     &content_stack,
                     &tab_state,
                     &tab_id,
@@ -1453,6 +1570,7 @@ fn add_terminal_tab_inner(
         &internals.tab_state,
         &tab_id,
     );
+    update_tab_bar_visibility(&internals.header, &internals.float_bar, &internals.tab_state);
     term.handle.focus_surface();
     if options.is_none() {
         (internals.callbacks.on_state_changed)();
@@ -1530,6 +1648,7 @@ fn add_browser_tab_inner(internals: &Rc<PaneInternals>, options: Option<BrowserT
         &internals.tab_state,
         &tab_id,
     );
+    update_tab_bar_visibility(&internals.header, &internals.float_bar, &internals.tab_state);
     if options.is_none() {
         (internals.callbacks.on_state_changed)();
     }
@@ -1603,6 +1722,7 @@ fn add_keybind_editor_tab_inner(internals: &Rc<PaneInternals>, input: KeybindsTa
         &internals.tab_state,
         &tab_id,
     );
+    update_tab_bar_visibility(&internals.header, &internals.float_bar, &internals.tab_state);
     if input.options.is_none() {
         (internals.callbacks.on_state_changed)();
     }
@@ -2099,6 +2219,8 @@ fn build_tab_button_from_label(
         let tab_id = tab_id.to_string();
         let context = TabContextMenuContext {
             tab_strip: internals.tab_strip.clone(),
+            header: internals.header.clone(),
+            float_bar: internals.float_bar.clone(),
             content_stack: internals.content_stack.clone(),
             tab_state: internals.tab_state.clone(),
             callbacks: internals.callbacks.clone(),
@@ -2164,6 +2286,8 @@ fn build_tab_button_from_label(
     {
         let tab_id = tab_id.to_string();
         let tab_strip = internals.tab_strip.clone();
+        let header = internals.header.clone();
+        let float_bar = internals.float_bar.clone();
         let content_stack = internals.content_stack.clone();
         let tab_state = internals.tab_state.clone();
         let callbacks = internals.callbacks.clone();
@@ -2177,6 +2301,8 @@ fn build_tab_button_from_label(
             if !is_pinned {
                 remove_tab(
                     &tab_strip,
+                    &header,
+                    &float_bar,
                     &content_stack,
                     &tab_state,
                     &tab_id,
@@ -2262,6 +2388,8 @@ fn show_tab_context_menu(tab_btn: &gtk::Box, tab_id: &str, context: &TabContextM
     {
         let tid = tab_id.to_string();
         let ts = context.tab_strip.clone();
+        let hdr = context.header.clone();
+        let fbar = context.float_bar.clone();
         let cs = context.content_stack.clone();
         let state = context.tab_state.clone();
         let cb = context.callbacks.clone();
@@ -2271,6 +2399,8 @@ fn show_tab_context_menu(tab_btn: &gtk::Box, tab_id: &str, context: &TabContextM
             menu_ref.popdown();
             remove_tab(
                 &ts,
+                &hdr,
+                &fbar,
                 &cs,
                 &state,
                 &tid,
@@ -2653,6 +2783,16 @@ fn rebuild_tab_strip(tab_strip: &gtk::Box, tab_state: &Rc<RefCell<TabState>>) {
     }
 }
 
+fn update_tab_bar_visibility(
+    header: &gtk::Box,
+    float_bar: &gtk::Box,
+    tab_state: &Rc<std::cell::RefCell<TabState>>,
+) {
+    let single = tab_state.borrow().tabs.len() <= 1;
+    header.set_visible(!single);
+    float_bar.set_visible(single);
+}
+
 fn rebind_moved_tab_entry(entry: &mut TabEntry, target: &Rc<PaneInternals>) {
     if let TabKind::Terminal { state } = &entry.kind {
         state.handle.replace_callbacks(make_terminal_callbacks(
@@ -2754,15 +2894,19 @@ fn transfer_tab_between_panes(
             &source.pane_outer.clone().upcast(),
             PaneEmptyReason::MovedLastTabOut,
         );
-    } else if let Some(next_active) = source_next_active {
-        activate_tab(
-            &source.tab_strip,
-            &source.content_stack,
-            &source.tab_state,
-            &next_active,
-        );
+    } else {
+        update_tab_bar_visibility(&source.header, &source.float_bar, &source.tab_state);
+        if let Some(next_active) = source_next_active {
+            activate_tab(
+                &source.tab_strip,
+                &source.content_stack,
+                &source.tab_state,
+                &next_active,
+            );
+        }
     }
 
+    update_tab_bar_visibility(&target.header, &target.float_bar, &target.tab_state);
     activate_tab(
         &target.tab_strip,
         &target.content_stack,
@@ -3006,6 +3150,8 @@ fn activate_tab(
 
 fn remove_tab(
     tab_strip: &gtk::Box,
+    header: &gtk::Box,
+    float_bar: &gtk::Box,
     content_stack: &gtk::Stack,
     tab_state: &Rc<RefCell<TabState>>,
     tab_id: &str,
@@ -3040,6 +3186,7 @@ fn remove_tab(
     if was_active {
         activate_tab(tab_strip, content_stack, tab_state, &new_id);
     }
+    update_tab_bar_visibility(header, float_bar, tab_state);
     (callbacks.on_state_changed)();
 }
 
