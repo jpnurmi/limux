@@ -354,6 +354,27 @@ pub const PANE_CSS: &str = r#"
     background: alpha(@window_fg_color, 0.08);
     color: alpha(@window_fg_color, 0.8);
 }
+.limux-action-menu-btn {
+    background: none;
+    border: none;
+    border-radius: 4px;
+    padding: 0;
+    min-height: 0;
+    min-width: 0;
+}
+.limux-action-menu-btn > button {
+    background: none;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 5px;
+    min-height: 0;
+    min-width: 0;
+    color: alpha(@window_fg_color, 0.4);
+}
+.limux-action-menu-btn > button:hover {
+    background: alpha(@window_fg_color, 0.08);
+    color: alpha(@window_fg_color, 0.8);
+}
 .limux-split-icon {
     border: 1px solid alpha(@window_fg_color, 0.4);
     border-radius: 2px;
@@ -496,35 +517,49 @@ pub fn create_pane(
         .spacing(1)
         .build();
 
-    let new_term_btn = icon_button(
-        "utilities-terminal-symbolic",
-        &pane_action_tooltip(
-            &shortcuts,
-            "New terminal tab",
-            Some(ShortcutId::NewTerminal),
-        ),
-    );
-    let new_browser_btn = icon_button(
-        "limux-globe-symbolic",
-        &pane_action_tooltip(&shortcuts, "New browser tab", None),
-    );
-    let split_h_btn = icon_button(
-        "limux-split-horizontal-symbolic",
-        &pane_action_tooltip(&shortcuts, "Split right", Some(ShortcutId::SplitRight)),
-    );
-    let split_v_btn = icon_button(
-        "limux-split-vertical-symbolic",
-        &pane_action_tooltip(&shortcuts, "Split down", Some(ShortcutId::SplitDown)),
-    );
     let close_btn = icon_button(
         "window-close-symbolic",
         &pane_action_tooltip(&shortcuts, "Close pane", Some(ShortcutId::CloseFocusedPane)),
     );
 
-    actions.append(&new_term_btn);
-    actions.append(&new_browser_btn);
-    actions.append(&split_h_btn);
-    actions.append(&split_v_btn);
+    // Action menu (vertical ellipsis)
+    let action_menu_btn = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text("Actions")
+        .build();
+    action_menu_btn.add_css_class("limux-action-menu-btn");
+
+    let action_popover = gtk::Popover::new();
+    let action_popover_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .margin_top(4)
+        .margin_bottom(4)
+        .margin_start(4)
+        .margin_end(4)
+        .spacing(2)
+        .build();
+
+    let menu_term_btn = menu_item("New terminal tab");
+    action_popover_box.append(&menu_term_btn);
+
+    let menu_browser_btn = menu_item("New browser tab");
+    action_popover_box.append(&menu_browser_btn);
+
+    let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
+    sep.set_margin_top(2);
+    sep.set_margin_bottom(2);
+    action_popover_box.append(&sep);
+
+    let menu_split_h_btn = menu_item("Split right");
+    action_popover_box.append(&menu_split_h_btn);
+
+    let menu_split_v_btn = menu_item("Split down");
+    action_popover_box.append(&menu_split_v_btn);
+
+    action_popover.set_child(Some(&action_popover_box));
+    action_menu_btn.set_popover(Some(&action_popover));
+
+    actions.append(&action_menu_btn);
     actions.append(&close_btn);
 
     header.append(&tab_overlay);
@@ -546,35 +581,48 @@ pub fn create_pane(
     float_bar.add_css_class("limux-float-bar");
     content_overlay.add_overlay(&float_bar);
 
-    let float_new_term_btn = icon_button(
-        "utilities-terminal-symbolic",
-        &pane_action_tooltip(
-            &shortcuts,
-            "New terminal tab",
-            Some(ShortcutId::NewTerminal),
-        ),
-    );
-    let float_new_browser_btn = icon_button(
-        "limux-globe-symbolic",
-        &pane_action_tooltip(&shortcuts, "New browser tab", None),
-    );
-    let float_split_h_btn = icon_button(
-        "limux-split-horizontal-symbolic",
-        &pane_action_tooltip(&shortcuts, "Split right", Some(ShortcutId::SplitRight)),
-    );
-    let float_split_v_btn = icon_button(
-        "limux-split-vertical-symbolic",
-        &pane_action_tooltip(&shortcuts, "Split down", Some(ShortcutId::SplitDown)),
-    );
     let float_close_btn = icon_button(
         "window-close-symbolic",
         &pane_action_tooltip(&shortcuts, "Close pane", Some(ShortcutId::CloseFocusedPane)),
     );
 
-    float_bar.append(&float_new_term_btn);
-    float_bar.append(&float_new_browser_btn);
-    float_bar.append(&float_split_h_btn);
-    float_bar.append(&float_split_v_btn);
+    let float_action_menu_btn = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text("Actions")
+        .build();
+    float_action_menu_btn.add_css_class("limux-action-menu-btn");
+
+    let float_action_popover = gtk::Popover::new();
+    let float_action_popover_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .margin_top(4)
+        .margin_bottom(4)
+        .margin_start(4)
+        .margin_end(4)
+        .spacing(2)
+        .build();
+
+    let float_menu_term_btn = menu_item("New terminal tab");
+    float_action_popover_box.append(&float_menu_term_btn);
+
+    let float_menu_browser_btn = menu_item("New browser tab");
+    float_action_popover_box.append(&float_menu_browser_btn);
+
+    let float_sep = gtk::Separator::new(gtk::Orientation::Horizontal);
+    float_sep.set_margin_top(2);
+    float_sep.set_margin_bottom(2);
+    float_action_popover_box.append(&float_sep);
+
+    let float_menu_split_h_btn = menu_item("Split right");
+    float_action_popover_box.append(&float_menu_split_h_btn);
+
+    let float_menu_split_v_btn = menu_item("Split down");
+    float_action_popover_box.append(&float_menu_split_v_btn);
+
+    float_action_popover.set_child(Some(&float_action_popover_box));
+    float_action_menu_btn.set_popover(Some(&float_action_popover));
+
+    float_bar.append(&float_action_menu_btn);
     float_bar.append(&float_close_btn);
 
     let ws_wd = Rc::new(RefCell::new(
@@ -600,9 +648,6 @@ pub fn create_pane(
         callbacks: callbacks.clone(),
         working_directory: ws_wd.clone(),
         workspace_dragging: workspace_dragging.clone(),
-        new_terminal_button: new_term_btn.clone(),
-        split_right_button: split_h_btn.clone(),
-        split_down_button: split_v_btn.clone(),
         close_pane_button: close_btn.clone(),
     });
 
@@ -612,31 +657,40 @@ pub fn create_pane(
         add_terminal_tab_inner(&internals, working_directory, None);
     }
 
+    // Action menu button handlers
     {
         let internals = internals.clone();
         let wd = ws_wd.clone();
-        new_term_btn.connect_clicked(move |_| {
+        let popover = action_popover.clone();
+        menu_term_btn.connect_clicked(move |_| {
+            popover.popdown();
             let dir = wd.borrow().clone();
             add_terminal_tab_inner(&internals, dir.as_deref(), None);
         });
     }
     {
         let internals = internals.clone();
-        new_browser_btn.connect_clicked(move |_| {
+        let popover = action_popover.clone();
+        menu_browser_btn.connect_clicked(move |_| {
+            popover.popdown();
             add_browser_tab_inner(&internals, None);
         });
     }
     {
         let pw = outer.clone();
         let cb = callbacks.clone();
-        split_h_btn.connect_clicked(move |_| {
+        let popover = action_popover.clone();
+        menu_split_h_btn.connect_clicked(move |_| {
+            popover.popdown();
             (cb.on_split)(&pw.clone().upcast(), gtk::Orientation::Horizontal);
         });
     }
     {
         let pw = outer.clone();
         let cb = callbacks.clone();
-        split_v_btn.connect_clicked(move |_| {
+        let popover = action_popover.clone();
+        menu_split_v_btn.connect_clicked(move |_| {
+            popover.popdown();
             (cb.on_split)(&pw.clone().upcast(), gtk::Orientation::Vertical);
         });
     }
@@ -647,32 +701,40 @@ pub fn create_pane(
             (cb.on_close_pane)(&pw.clone().upcast());
         });
     }
-    // Wire float bar button signals
+    // Float action menu button handlers
     {
         let internals = internals.clone();
         let wd = ws_wd.clone();
-        float_new_term_btn.connect_clicked(move |_| {
+        let popover = float_action_popover.clone();
+        float_menu_term_btn.connect_clicked(move |_| {
+            popover.popdown();
             let dir = wd.borrow().clone();
             add_terminal_tab_inner(&internals, dir.as_deref(), None);
         });
     }
     {
         let internals = internals.clone();
-        float_new_browser_btn.connect_clicked(move |_| {
+        let popover = float_action_popover.clone();
+        float_menu_browser_btn.connect_clicked(move |_| {
+            popover.popdown();
             add_browser_tab_inner(&internals, None);
         });
     }
     {
         let pw = outer.clone();
         let cb = callbacks.clone();
-        float_split_h_btn.connect_clicked(move |_| {
+        let popover = float_action_popover.clone();
+        float_menu_split_h_btn.connect_clicked(move |_| {
+            popover.popdown();
             (cb.on_split)(&pw.clone().upcast(), gtk::Orientation::Horizontal);
         });
     }
     {
         let pw = outer.clone();
         let cb = callbacks.clone();
-        float_split_v_btn.connect_clicked(move |_| {
+        let popover = float_action_popover.clone();
+        float_menu_split_v_btn.connect_clicked(move |_| {
+            popover.popdown();
             (cb.on_split)(&pw.clone().upcast(), gtk::Orientation::Vertical);
         });
     }
@@ -1003,9 +1065,6 @@ pub struct PaneInternals {
     callbacks: Rc<PaneCallbacks>,
     working_directory: Rc<std::cell::RefCell<Option<String>>>,
     workspace_dragging: Rc<Cell<bool>>,
-    new_terminal_button: gtk::Button,
-    split_right_button: gtk::Button,
-    split_down_button: gtk::Button,
     close_pane_button: gtk::Button,
 }
 
@@ -1030,6 +1089,19 @@ fn icon_button(icon_name: &str, tooltip: &str) -> gtk::Button {
         .has_frame(false)
         .build();
     btn.add_css_class("limux-pane-action");
+    btn
+}
+
+fn menu_item(label: &str) -> gtk::Button {
+    let text = gtk::Label::new(Some(label));
+    text.set_xalign(0.0);
+    text.set_hexpand(true);
+    let btn = gtk::Button::builder()
+        .child(&text)
+        .build();
+    btn.add_css_class("flat");
+    btn.set_hexpand(true);
+    btn.set_halign(gtk::Align::Fill);
     btn
 }
 
@@ -1758,27 +1830,6 @@ pub fn refresh_shortcut_tooltips(pane_widget: &gtk::Widget, shortcuts: &Resolved
         return;
     };
 
-    internals
-        .new_terminal_button
-        .set_tooltip_text(Some(&pane_action_tooltip(
-            shortcuts,
-            "New terminal tab",
-            Some(ShortcutId::NewTerminal),
-        )));
-    internals
-        .split_right_button
-        .set_tooltip_text(Some(&pane_action_tooltip(
-            shortcuts,
-            "Split right",
-            Some(ShortcutId::SplitRight),
-        )));
-    internals
-        .split_down_button
-        .set_tooltip_text(Some(&pane_action_tooltip(
-            shortcuts,
-            "Split down",
-            Some(ShortcutId::SplitDown),
-        )));
     internals
         .close_pane_button
         .set_tooltip_text(Some(&pane_action_tooltip(
