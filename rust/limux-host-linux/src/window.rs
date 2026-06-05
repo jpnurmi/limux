@@ -1430,7 +1430,15 @@ pub fn build_window(app: &adw::Application) {
     header_bar.set_title_widget(Some(&gtk::Label::builder().label(&title).build()));
 
     let hamburger_menu = gio::Menu::new();
-    hamburger_menu.append(Some("Settings"), Some("win.settings"));
+    let section1 = gio::Menu::new();
+    section1.append(Some("New workspace"), Some("win.new-workspace"));
+    hamburger_menu.append_section(None, &section1);
+    let section2 = gio::Menu::new();
+    section2.append(Some("Settings"), Some("win.settings"));
+    hamburger_menu.append_section(None, &section2);
+    let section3 = gio::Menu::new();
+    section3.append(Some("Quit"), Some("app.quit"));
+    hamburger_menu.append_section(None, &section3);
 
     let hamburger = gtk::MenuButton::builder()
         .icon_name("open-menu-symbolic")
