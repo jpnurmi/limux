@@ -21,6 +21,7 @@ use crate::layout_state::{
     self, AppSessionState, LayoutNodeState, LoadedSession, PaneState, WorkspaceState,
 };
 use crate::pane::{self, PaneCallbacks};
+use crate::settings_editor;
 use crate::shortcut_config::{
     self, EditableCapturePolicy, ResolvedShortcutConfig, ShortcutCommand, ShortcutId,
 };
@@ -1425,23 +1426,21 @@ pub fn build_window(app: &adw::Application) {
         .build();
     apply_window_background_class(&window, background_opacity);
 
-    // On Wayland compositors with xdg-decoration support, the compositor
-    // already provides the window chrome, so keep Limux from rendering a
-    // duplicate header bar. X11 continues to use the in-app header.
-    let provides_decorations = display
-        .clone()
-        .downcast::<gdk4_wayland::WaylandDisplay>()
-        .ok()
-        .map(|display| display.query_registry("zxdg_decoration_manager_v1"))
-        .unwrap_or(false);
+    let header_bar = adw::HeaderBar::new();
+    header_bar.set_title_widget(Some(&gtk::Label::builder().label(&title).build()));
 
-    let header = if provides_decorations {
-        None
-    } else {
-        let bar = adw::HeaderBar::new();
-        bar.set_title_widget(Some(&gtk::Label::builder().label(&title).build()));
-        Some(bar)
-    };
+    let hamburger_menu = gio::Menu::new();
+    hamburger_menu.append(Some("Settings"), Some("win.settings"));
+
+    let hamburger = gtk::MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .tooltip_text("Menu")
+        .menu_model(&hamburger_menu)
+        .build();
+    hamburger.add_css_class("flat");
+    header_bar.pack_end(&hamburger);
+
+    let header = Some(header_bar);
 
     let stack = gtk::Stack::new();
     stack.set_transition_type(gtk::StackTransitionType::None);
@@ -1550,6 +1549,59 @@ pub fn build_window(app: &adw::Application) {
     CONTROL_STATE.with(|slot| {
         *slot.borrow_mut() = Some(state.clone());
     });
+
+    // Settings action for hamburger menu
+    {
+        let state = state.clone();
+        let settings_action = gio::SimpleAction::new("settings", None);
+        settings_action.connect_activate(move |_, _| {
+            let (config, shortcuts) = {
+                let s = state.borrow();
+                (s.config.clone(), s.shortcuts.clone())
+            };
+            let on_capture = {
+                let state = state.clone();
+                Rc::new(move |id, binding| persist_shortcut_binding(&state, id, binding))
+            };
+            let on_config_changed = {
+                let state = state.clone();
+                Rc::new(
+                    move |previous: &app_config::AppConfig, updated: &app_config::AppConfig| {
+                        let style_manager = adw::StyleManager::default();
+                        let system_prefers_dark = state.borrow().system_prefers_dark.get();
+                        apply_appearance(&style_manager, system_prefers_dark, &updated.appearance);
+                        if updated.appearance.ui_scale != previous.appearance.ui_scale {
+                            reload_app_css(&state, updated);
+                        }
+                        if let Err(err) = app_config::save(updated) {
+                            state.borrow().config.borrow_mut().clone_from(previous);
+                            apply_appearance(
+                                &style_manager,
+                                system_prefers_dark,
+                                &previous.appearance,
+                            );
+                            if updated.appearance.ui_scale != previous.appearance.ui_scale {
+                                reload_app_css(&state, previous);
+                            }
+                            let detail = format!("Failed to save Limux settings: {err}");
+                            eprintln!("limux: {detail}");
+                            show_runtime_error(&state, "Failed to save settings", &detail);
+                        }
+                    },
+                )
+            };
+            settings_editor::present_settings_dialog(
+                &state.borrow().window,
+                settings_editor::SettingsEditorInput {
+                    config,
+                    shortcuts,
+                    on_capture,
+                    on_config_changed,
+                },
+            );
+        });
+        window.add_action(&settings_action);
+    }
 
     install_sidebar_resize(&state, &main_split, &sidebar, &sidebar_shell);
 
@@ -4421,7 +4473,6 @@ pub(crate) fn create_pane_for_workspace(
     let ws_id_empty = ws_id.to_string();
     let state_for_split_with_tab = state.clone();
     let state_for_config = state.clone();
-    let state_for_config_changed = state.clone();
     let ws_id_split_with_tab = ws_id.to_string();
     let ws_id_for_env = ws_id.to_string();
 
@@ -4537,36 +4588,6 @@ pub(crate) fn create_pane_for_workspace(
             let s = state_for_config.borrow();
             s.config.clone()
         }),
-        on_config_changed: Rc::new(
-            move |previous: &app_config::AppConfig, updated: &app_config::AppConfig| {
-                let style_manager = adw::StyleManager::default();
-                let system_prefers_dark =
-                    state_for_config_changed.borrow().system_prefers_dark.get();
-                apply_appearance(&style_manager, system_prefers_dark, &updated.appearance);
-                if updated.appearance.ui_scale != previous.appearance.ui_scale {
-                    reload_app_css(&state_for_config_changed, updated);
-                }
-                if let Err(err) = app_config::save(updated) {
-                    state_for_config_changed
-                        .borrow()
-                        .config
-                        .borrow_mut()
-                        .clone_from(previous);
-                    apply_appearance(&style_manager, system_prefers_dark, &previous.appearance);
-                    if updated.appearance.ui_scale != previous.appearance.ui_scale {
-                        reload_app_css(&state_for_config_changed, previous);
-                    }
-
-                    let detail = format!("Failed to save Limux settings: {err}");
-                    eprintln!("limux: {detail}");
-                    show_runtime_error(
-                        &state_for_config_changed,
-                        "Failed to save settings",
-                        &detail,
-                    );
-                }
-            },
-        ),
         workspace_for_pane: Box::new(move |_pane_widget| Some(ws_id_for_env.clone())),
     });
 
