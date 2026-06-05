@@ -1889,16 +1889,6 @@ pub fn tab_title(pane_widget: &gtk::Widget, tab_id: &str) -> Option<String> {
     Some(entry.title_label.label().to_string())
 }
 
-pub fn tab_working_directory(pane_widget: &gtk::Widget, tab_id: &str) -> Option<String> {
-    let internals = find_pane_internals(pane_widget)?;
-    let tab_state = internals.tab_state.borrow();
-    let entry = tab_state.tabs.iter().find(|entry| entry.id == tab_id)?;
-    match &entry.kind {
-        TabKind::Terminal { state } => state.cwd.borrow().clone(),
-        TabKind::Browser { .. } | TabKind::Keybinds => None,
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaneSummary {
     pub pane_id: u32,

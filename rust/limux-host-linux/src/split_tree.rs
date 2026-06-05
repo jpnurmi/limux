@@ -143,25 +143,6 @@ pub(crate) struct SplitTreeContainer {
 }
 
 impl SplitTreeContainer {
-    /// Create a new container with a single pane (no splits).
-    pub(crate) fn new(state: &State, initial_pane: gtk::Widget) -> Rc<Self> {
-        let bin = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        bin.set_hexpand(true);
-        bin.set_vexpand(true);
-        bin.append(&initial_pane);
-
-        Rc::new(Self {
-            tree: RefCell::new(SplitNode::Leaf {
-                pane_widget: initial_pane,
-            }),
-            bin,
-            rebuild_source: RefCell::new(None),
-            last_focused: RefCell::new(None),
-            zoomed_pane: RefCell::new(None),
-            state: state.clone(),
-        })
-    }
-
     /// Create a container from a pre-built tree (for session restore).
     pub(crate) fn new_from_tree(state: &State, node: SplitNode) -> Rc<Self> {
         let bin = gtk::Box::new(gtk::Orientation::Vertical, 0);
