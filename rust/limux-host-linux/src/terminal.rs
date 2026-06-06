@@ -1211,6 +1211,7 @@ pub struct TerminalCallbacks {
     pub on_split_down: Box<VoidCallback>,
     pub on_open_keybinds: Box<WidgetCallback>,
     pub identity: Box<IdentityCallback>,
+    pub on_focus_changed: Option<Box<dyn Fn()>>,
 }
 
 pub struct TerminalOptions {
@@ -1896,6 +1897,7 @@ pub fn create_terminal(
 
     // Focus
     {
+        let callbacks_for_focus = callbacks.clone();
         let surface_cell = surface_cell.clone();
         let had_focus_enter = had_focus.clone();
         let had_focus_leave = had_focus.clone();
@@ -1915,11 +1917,10 @@ pub fn create_terminal(
             if let Some(surface) = *sc.borrow() {
                 unsafe { ghostty_surface_set_focus(surface, true) };
             }
-            update_unfocused_split(
-                &unfocused_revealer_enter,
-                true,
-                is_split_enter.get(),
-            );
+            update_unfocused_split(&unfocused_revealer_enter, true, is_split_enter.get());
+            if let Some(ref on_focus) = callbacks_for_focus.borrow().on_focus_changed {
+                (on_focus)();
+            }
         });
         let is_split_leave = is_split.clone();
         focus_ctrl.connect_leave(move |_| {
@@ -1929,11 +1930,7 @@ pub fn create_terminal(
             if let Some(surface) = *surface_cell.borrow() {
                 unsafe { ghostty_surface_set_focus(surface, false) };
             }
-            update_unfocused_split(
-                &unfocused_revealer_leave,
-                false,
-                is_split_leave.get(),
-            );
+            update_unfocused_split(&unfocused_revealer_leave, false, is_split_leave.get());
         });
         gl_area.add_controller(focus_ctrl);
     }

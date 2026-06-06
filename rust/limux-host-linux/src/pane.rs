@@ -1096,9 +1096,7 @@ fn menu_item(label: &str) -> gtk::Button {
     let text = gtk::Label::new(Some(label));
     text.set_xalign(0.0);
     text.set_hexpand(true);
-    let btn = gtk::Button::builder()
-        .child(&text)
-        .build();
+    let btn = gtk::Button::builder().child(&text).build();
     btn.add_css_class("flat");
     btn.set_hexpand(true);
     btn.set_halign(gtk::Align::Fill);
@@ -1266,6 +1264,7 @@ fn make_terminal_callbacks(
     let tid_for_title = tab_id.to_string();
     let title_label = title_label.clone();
     let state_for_title = internals.tab_state.clone();
+    let callbacks_for_title = internals.callbacks.clone();
     let callbacks_for_bell = internals.callbacks.clone();
     let callbacks_for_pwd = internals.callbacks.clone();
     let callbacks_for_close = internals.callbacks.clone();
@@ -1301,6 +1300,7 @@ fn make_terminal_callbacks(
                 title.to_string()
             };
             title_label.set_label(&display);
+            (callbacks_for_title.on_state_changed)();
         }),
         on_pwd_changed: Box::new(move |pwd: &str| {
             *term_cwd_for_pwd.borrow_mut() = Some(pwd.to_string());
@@ -1394,6 +1394,10 @@ fn make_terminal_callbacks(
                 }
             }
         }),
+        on_focus_changed: {
+            let callbacks = internals.callbacks.clone();
+            Some(Box::new(move || (callbacks.on_state_changed)()))
+        },
     }
 }
 
@@ -1605,7 +1609,11 @@ fn add_terminal_tab_inner(
         &internals.tab_state,
         &tab_id,
     );
-    update_tab_bar_visibility(&internals.header, &internals.float_bar, &internals.tab_state);
+    update_tab_bar_visibility(
+        &internals.header,
+        &internals.float_bar,
+        &internals.tab_state,
+    );
     term.handle.focus_surface();
     if options.is_none() {
         (internals.callbacks.on_state_changed)();
@@ -1683,7 +1691,11 @@ fn add_browser_tab_inner(internals: &Rc<PaneInternals>, options: Option<BrowserT
         &internals.tab_state,
         &tab_id,
     );
-    update_tab_bar_visibility(&internals.header, &internals.float_bar, &internals.tab_state);
+    update_tab_bar_visibility(
+        &internals.header,
+        &internals.float_bar,
+        &internals.tab_state,
+    );
     if options.is_none() {
         (internals.callbacks.on_state_changed)();
     }
@@ -1757,7 +1769,11 @@ fn add_keybind_editor_tab_inner(internals: &Rc<PaneInternals>, input: KeybindsTa
         &internals.tab_state,
         &tab_id,
     );
-    update_tab_bar_visibility(&internals.header, &internals.float_bar, &internals.tab_state);
+    update_tab_bar_visibility(
+        &internals.header,
+        &internals.float_bar,
+        &internals.tab_state,
+    );
     if input.options.is_none() {
         (internals.callbacks.on_state_changed)();
     }

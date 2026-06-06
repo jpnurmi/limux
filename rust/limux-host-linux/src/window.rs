@@ -98,7 +98,6 @@ impl AppState {
     fn active_workspace(&self) -> Option<&Workspace> {
         self.workspaces.get(self.active_idx)
     }
-
 }
 
 fn workspace_ref(id: &str) -> String {
@@ -1704,8 +1703,6 @@ pub fn build_window(app: &adw::Application) {
         });
     }
 
-
-
     // Save the full session on window close.
     {
         let state = state.clone();
@@ -3191,9 +3188,10 @@ fn begin_workspace_inline_rename(state: &State, workspace_id: &str) {
                     .iter_mut()
                     .find(|workspace| workspace.id == workspace_id)
                 {
-                    workspace.name = next_name;
+                    workspace.name = next_name.clone();
                 }
                 drop(s);
+                refresh_window_title(&state_for_commit);
                 request_session_save(&state_for_commit);
             }
 
@@ -4138,6 +4136,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 workspace.name = title.clone();
                 workspace.name_label.set_label(&title);
             }
+
+            refresh_window_title(state);
             request_session_save(state);
 
             let result = {
@@ -4455,6 +4455,8 @@ fn add_workspace_from_state(state: &State, workspace: &WorkspaceState) {
 
     stack.set_visible_child_name(&stack_name);
     sidebar_list.select_row(Some(&row));
+
+    refresh_window_title(state);
 }
 
 /// Create a PaneWidget wired up with callbacks for a specific workspace.
@@ -4565,10 +4567,13 @@ pub(crate) fn create_pane_for_workspace(
             let ws_id = ws_id_pwd.clone();
             let pwd = pwd.to_string();
             glib::idle_add_local_once(move || {
-                let s = state.borrow();
-                if let Some(ws) = s.workspaces.iter().find(|w| w.id == ws_id) {
-                    *ws.cwd.borrow_mut() = Some(pwd);
+                {
+                    let s = state.borrow();
+                    if let Some(ws) = s.workspaces.iter().find(|w| w.id == ws_id) {
+                        *ws.cwd.borrow_mut() = Some(pwd);
+                    }
                 }
+                refresh_window_title(&state);
             });
         }),
         on_empty: Box::new(move |pane_widget, reason| {
@@ -4577,7 +4582,11 @@ pub(crate) fn create_pane_for_workspace(
         }),
         on_state_changed: Box::new({
             let state = state.clone();
-            move || request_session_save(&state)
+            move || {
+                request_session_save(&state);
+                let s = state.clone();
+                glib::idle_add_local_once(move || refresh_window_title(&s));
+            }
         }),
         on_split_with_tab: Box::new(
             move |source_pane, target_pane, orientation, tab_id, new_pane_first| {
@@ -4674,8 +4683,27 @@ fn close_workspace_by_id_internal(
     }
 }
 
+/// Update the window title to show the active workspace name and,
+/// if available, the CWD of the currently focused pane's active surface.
+fn refresh_window_title(state: &State) {
+    let display_title = find_focused_pane(state)
+        .and_then(|(_, pane_widget)| pane::active_surface_summary(&pane_widget))
+        .map(|summary| summary.title)
+        .filter(|t| !t.is_empty())
+        .or_else(|| state.borrow().active_workspace().map(|ws| ws.name.clone()));
+
+    let Some(display_title) = display_title else {
+        return;
+    };
+
+    if let Some(header_bar) = state.borrow().top_bar.as_ref() {
+        header_bar.set_title_widget(Some(&gtk::Label::builder().label(&display_title).build()));
+    }
+    state.borrow().window.set_title(Some(&display_title));
+}
+
 fn switch_workspace(state: &State, idx: usize) {
-    let (stack, stack_name, unread_handles, focus_root) = {
+    let (stack, stack_name, unread_handles, focus_root, _workspace_name) = {
         let mut s = state.borrow_mut();
         if idx >= s.workspaces.len() || idx == s.active_idx {
             return;
@@ -4684,6 +4712,7 @@ fn switch_workspace(state: &State, idx: usize) {
         let stack = s.stack.clone();
         let stack_name = format!("ws-{}", s.workspaces[idx].id);
         let focus_root = s.workspaces[idx].root.clone();
+        let workspace_name = s.workspaces[idx].name.clone();
 
         let unread_handles = if s.workspaces[idx].unread {
             let ws = &mut s.workspaces[idx];
@@ -4697,13 +4726,21 @@ fn switch_workspace(state: &State, idx: usize) {
             None
         };
 
-        (stack, stack_name, unread_handles, focus_root)
+        (
+            stack,
+            stack_name,
+            unread_handles,
+            focus_root,
+            workspace_name,
+        )
     };
 
     stack.set_visible_child_name(&stack_name);
     glib::idle_add_local_once(move || {
         focus_workspace_entrypoint(&focus_root);
     });
+
+    refresh_window_title(state);
 
     if let Some((notify_dot, notify_label, sidebar_row)) = unread_handles {
         notify_dot.remove_css_class("limux-notify-dot");

@@ -162,7 +162,10 @@ impl SplitTreeContainer {
             state: state.clone(),
         });
 
-        pane::set_terminals_split_state(container.bin.upcast_ref(), !container.tree.borrow().is_leaf());
+        pane::set_terminals_split_state(
+            container.bin.upcast_ref(),
+            !container.tree.borrow().is_leaf(),
+        );
         container
     }
 
@@ -334,10 +337,7 @@ impl SplitTreeContainer {
             self.bin.append(&widget);
         }
         refresh_terminal_displays_after_rebuild(self.bin.upcast_ref());
-        pane::set_terminals_split_state(
-            self.bin.upcast_ref(),
-            !self.tree.borrow().is_leaf(),
-        );
+        pane::set_terminals_split_state(self.bin.upcast_ref(), !self.tree.borrow().is_leaf());
 
         // Newly created panes are tracked as pane containers rather than the
         // inner terminal/browser widget, so restore through the pane helper
