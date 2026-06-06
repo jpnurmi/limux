@@ -1173,9 +1173,8 @@ const BASE_CSS: &str = r#"
     color: var(--limux-host-entry-placeholder);
 }
 .limux-sidebar {
-    background-color: @window_bg_color;
+    background-color: alpha(@window_bg_color, 0.95);
     color: @window_fg_color;
-    border-right: 1px solid alpha(@window_fg_color, 0.08);
 }
 .limux-sidebar-row-box {
     padding: 8px 6px 8px 3px;
@@ -1320,10 +1319,8 @@ row:selected .limux-ws-path {
 }
 .limux-sidebar-handle {
     min-width: 3px;
-    background-color: alpha(@window_fg_color, 0.08);
-}
-.limux-sidebar-handle:hover {
-    background-color: alpha(@accent_bg_color, 0.45);
+    background: @window_bg_color;
+    border-right: 1px solid alpha(@window_fg_color, 0.08);
 }
 "#;
 
@@ -1898,16 +1895,11 @@ fn sanitize_background_opacity(background_opacity: f64) -> f64 {
     }
 }
 
-fn use_opaque_window_background(background_opacity: f64) -> bool {
-    sanitize_background_opacity(background_opacity) >= 1.0
-}
-
-fn apply_window_background_class(window: &adw::ApplicationWindow, background_opacity: f64) {
-    if use_opaque_window_background(background_opacity) {
-        window.add_css_class("background");
-    } else {
-        window.remove_css_class("background");
-    }
+fn apply_window_background_class(window: &adw::ApplicationWindow, _background_opacity: f64) {
+    // Window is always transparent — content area and header bar draw their own
+    // backgrounds. This allows the sidebar to use translucent backgrounds that
+    // show through to the desktop.
+    window.remove_css_class("background");
 }
 
 // ---------------------------------------------------------------------------
@@ -5848,7 +5840,7 @@ mod tests {
         resolved_system_prefers_dark, sanitize_background_opacity,
         shortcut_allowed_while_browser_find_active, shortcut_blocked_by_editable,
         shortcut_command_from_key_event, shortcut_dispatch_propagation,
-        should_emit_desktop_notification, use_opaque_window_background,
+        should_emit_desktop_notification,
         validate_workspace_folder_input_with_dirs, workspace_drop_layout_path,
         workspace_folder_path_from_input, workspace_notification_message, Direction,
         EditableCaptureContext, NeighborScore, PaneBounds, PaneCreateDirection,
@@ -5892,14 +5884,6 @@ mod tests {
         assert_eq!(sanitize_background_opacity(-0.2), 0.0);
         assert_eq!(sanitize_background_opacity(1.7), 1.0);
         assert_eq!(sanitize_background_opacity(0.42), 0.42);
-    }
-
-    #[test]
-    fn transparent_window_background_only_applies_below_full_opacity() {
-        assert!(!use_opaque_window_background(0.8));
-        assert!(use_opaque_window_background(1.0));
-        assert!(use_opaque_window_background(5.0));
-        assert!(use_opaque_window_background(f64::NAN));
     }
 
     #[test]
