@@ -1557,6 +1557,18 @@ pub fn build_window(app: &adw::Application) {
         *slot.borrow_mut() = Some(state.clone());
     });
 
+    // Sidebar toggle button in header bar
+    if let Some(ref header_bar) = header {
+        let sidebar_btn = gtk::Button::builder()
+            .icon_name("sidebar-show-symbolic")
+            .tooltip_text("Toggle sidebar")
+            .build();
+        sidebar_btn.add_css_class("flat");
+        let state_for_sidebar = state.clone();
+        sidebar_btn.connect_clicked(move |_| toggle_sidebar(&state_for_sidebar));
+        header_bar.pack_start(&sidebar_btn);
+    }
+
     // Settings action for hamburger menu
     {
         let state = state.clone();
@@ -1610,7 +1622,13 @@ pub fn build_window(app: &adw::Application) {
         window.add_action(&settings_action);
     }
 
-    install_sidebar_resize(&state, &main_split, &sidebar, &sidebar_shell);
+    install_sidebar_resize(
+        &state,
+        &main_split,
+        &sidebar,
+        &sidebar_shell,
+        &sidebar_handle,
+    );
 
     {
         let state = state.clone();
@@ -1777,6 +1795,7 @@ fn install_sidebar_resize(
     main_split: &gtk::Box,
     sidebar: &gtk::Box,
     sidebar_shell: &gtk::Box,
+    sidebar_handle: &gtk::Box,
 ) {
     let resizing_sidebar = Rc::new(Cell::new(false));
     let drag_origin = Rc::new(Cell::new(SIDEBAR_WIDTH));
@@ -1805,6 +1824,7 @@ fn install_sidebar_resize(
         let drag_origin = drag_origin.clone();
         let sidebar = sidebar.clone();
         let sidebar_shell = sidebar_shell.clone();
+        let sidebar_handle = sidebar_handle.clone();
         let resizing_sidebar = resizing_sidebar.clone();
         let state = state.clone();
         drag.connect_drag_update(move |_, offset_x, _| {
@@ -1813,9 +1833,19 @@ fn install_sidebar_resize(
             }
             let min_width = sidebar_min_width(&sidebar);
             let width = (drag_origin.get() as f64 + offset_x).round() as i32;
-            let width = width.max(min_width);
-            set_sidebar_width(&sidebar_shell, width);
-            state.borrow_mut().sidebar_expanded_width = width;
+            let visible = sidebar_width(&sidebar_shell) > 10;
+            if visible && width < min_width {
+                let expanded = state.borrow().sidebar_expanded_width;
+                state.borrow_mut().sidebar_expanded_width = expanded.max(min_width);
+                set_sidebar_state_widgets(&sidebar_shell, &sidebar_handle, 0, false);
+            } else if !visible && width >= min_width {
+                let restored = width.max(state.borrow().sidebar_expanded_width);
+                set_sidebar_state_widgets(&sidebar_shell, &sidebar_handle, restored, true);
+                state.borrow_mut().sidebar_expanded_width = restored;
+            } else if visible {
+                set_sidebar_width(&sidebar_shell, width);
+                state.borrow_mut().sidebar_expanded_width = width;
+            }
         });
     }
 
@@ -1825,7 +1855,10 @@ fn install_sidebar_resize(
         let state = state.clone();
         drag.connect_drag_end(move |_, _, _| {
             resizing_sidebar.set(false);
-            state.borrow_mut().sidebar_expanded_width = sidebar_width(&sidebar_shell);
+            let width = sidebar_width(&sidebar_shell);
+            if width > 10 {
+                state.borrow_mut().sidebar_expanded_width = width;
+            }
             request_session_save(&state);
         });
     }
