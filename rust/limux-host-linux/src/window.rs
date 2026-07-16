@@ -2204,19 +2204,19 @@ fn dispatch_shortcut_command(state: &State, command: ShortcutCommand) -> bool {
             true
         }
         ShortcutCommand::FocusLeft => {
-            focus_pane_in_direction(state, Direction::Left);
+            focus_pane_or_fallback(state, Direction::Left);
             true
         }
         ShortcutCommand::FocusRight => {
-            focus_pane_in_direction(state, Direction::Right);
+            focus_pane_or_fallback(state, Direction::Right);
             true
         }
         ShortcutCommand::FocusUp => {
-            focus_pane_in_direction(state, Direction::Up);
+            focus_pane_or_fallback(state, Direction::Up);
             true
         }
         ShortcutCommand::FocusDown => {
-            focus_pane_in_direction(state, Direction::Down);
+            focus_pane_or_fallback(state, Direction::Down);
             true
         }
         ShortcutCommand::ActivateWorkspace1 => {
@@ -2802,7 +2802,7 @@ fn focus_desktop_notification_target(state: &State, target: &DesktopNotification
     };
 
     if let Some(root) = root {
-        focus_workspace_entrypoint(&root);
+        focus_workspace_entrypoint(&root, WorkspaceFocusTarget::First);
         return true;
     }
 
@@ -4884,6 +4884,10 @@ fn refresh_window_title(state: &State) {
 }
 
 fn switch_workspace(state: &State, idx: usize) {
+    switch_workspace_with_focus(state, idx, WorkspaceFocusTarget::First);
+}
+
+fn switch_workspace_with_focus(state: &State, idx: usize, focus_target: WorkspaceFocusTarget) {
     let (stack, stack_name, unread_handles, focus_root, workspace_id, _workspace_name) = {
         let mut s = state.borrow_mut();
         if idx >= s.workspaces.len() || idx == s.active_idx {
@@ -4920,7 +4924,7 @@ fn switch_workspace(state: &State, idx: usize) {
 
     stack.set_visible_child_name(&stack_name);
     glib::idle_add_local_once(move || {
-        focus_workspace_entrypoint(&focus_root);
+        focus_workspace_entrypoint(&focus_root, focus_target);
     });
 
     refresh_active_workspace_cwd_and_subtitle(state);
@@ -4942,6 +4946,10 @@ fn switch_workspace(state: &State, idx: usize) {
 }
 
 fn cycle_workspace(state: &State, direction: i32) {
+    cycle_workspace_with_focus(state, direction, WorkspaceFocusTarget::First);
+}
+
+fn cycle_workspace_with_focus(state: &State, direction: i32, focus_target: WorkspaceFocusTarget) {
     let (new_idx, row, sidebar_list) = {
         let s = state.borrow();
         let len = s.workspaces.len();
@@ -4955,21 +4963,24 @@ fn cycle_workspace(state: &State, direction: i32) {
             s.sidebar_list.clone(),
         )
     };
-    switch_workspace(state, new_idx);
+    switch_workspace_with_focus(state, new_idx, focus_target);
     sidebar_list.select_row(Some(&row));
 }
 
-fn focus_workspace_entrypoint(root: &gtk::Widget) {
-    let pane = first_leaf_pane(root);
-    if !pane::focus_active_tab_in_pane(&pane) {
-        if let Some(gl) = find_gl_area(&pane) {
-            gl.grab_focus();
-        } else if pane.is_focusable() || pane.can_focus() {
-            pane.grab_focus();
-        } else {
-            pane.child_focus(gtk::DirectionType::TabForward);
+fn focus_workspace_entrypoint(root: &gtk::Widget, target: WorkspaceFocusTarget) {
+    let pane = match target {
+        WorkspaceFocusTarget::First => first_leaf_pane(root),
+        WorkspaceFocusTarget::Top | WorkspaceFocusTarget::Bottom => {
+            workspace_edge_leaf_pane(root, target).unwrap_or_else(|| {
+                find_leaf_pane(
+                    root,
+                    gtk::Orientation::Vertical,
+                    target == WorkspaceFocusTarget::Top,
+                )
+            })
         }
-    }
+    };
+    focus_pane_widget(&pane);
 }
 
 fn first_leaf_pane(widget: &gtk::Widget) -> gtk::Widget {
@@ -5567,6 +5578,13 @@ enum Direction {
     Down,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkspaceFocusTarget {
+    First,
+    Top,
+    Bottom,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PaneBounds {
     left: f64,
@@ -5584,12 +5602,18 @@ struct NeighborScore {
 }
 
 /// Focus the neighboring pane in the given direction by walking the gtk::Paned tree.
-fn focus_pane_in_direction(state: &State, direction: Direction) {
+fn focus_pane_in_direction(state: &State, direction: Direction) -> bool {
     let (_ws_id, pane_widget) = match find_focused_pane(state) {
         Some(v) => v,
-        None => return,
+        None => return false,
     };
-    let root = state.borrow().window.clone().upcast::<gtk::Widget>();
+    let root = {
+        let s = state.borrow();
+        let Some(workspace) = s.active_workspace() else {
+            return false;
+        };
+        workspace.root.clone()
+    };
 
     // Determine which axis and sides we care about.
     let (target_orientation, must_be_start) = match direction {
@@ -5603,9 +5627,13 @@ fn focus_pane_in_direction(state: &State, direction: Direction) {
     // orientation where the current subtree is on the correct side.
     let mut current: gtk::Widget = pane_widget.clone();
     loop {
+        if current == root {
+            return false;
+        }
+
         let parent = match current.parent() {
             Some(p) => p,
-            None => return, // reached the top without finding a valid split
+            None => return false, // reached the top without finding a valid split
         };
         if let Some(paned) = parent.downcast_ref::<gtk::Paned>() {
             if paned.orientation() == target_orientation {
@@ -5626,16 +5654,46 @@ fn focus_pane_in_direction(state: &State, direction: Direction) {
                                     let prefer_start = !must_be_start;
                                     find_leaf_pane(&sibling, target_orientation, prefer_start)
                                 });
-                        // Find the GLArea inside the pane and focus it directly
-                        if let Some(gl) = find_gl_area(&leaf) {
-                            gl.grab_focus();
+                        if pane::is_pane_widget(&leaf) && focus_pane_widget(&leaf) {
+                            return true;
                         }
                     }
-                    return;
+                    return false;
                 }
             }
         }
         current = parent;
+    }
+}
+
+fn focus_pane_widget(pane_widget: &gtk::Widget) -> bool {
+    if pane::focus_active_tab_in_pane(pane_widget) {
+        return true;
+    }
+
+    if let Some(gl) = find_gl_area(pane_widget) {
+        gl.grab_focus();
+        return true;
+    }
+
+    if pane_widget.is_focusable() || pane_widget.can_focus() {
+        pane_widget.grab_focus();
+        return true;
+    }
+
+    pane_widget.child_focus(gtk::DirectionType::TabForward)
+}
+
+fn focus_pane_or_fallback(state: &State, direction: Direction) {
+    if focus_pane_in_direction(state, direction) {
+        return;
+    }
+
+    match direction {
+        Direction::Left => cycle_focused_pane_tab(state, -1),
+        Direction::Right => cycle_focused_pane_tab(state, 1),
+        Direction::Up => cycle_workspace_with_focus(state, -1, WorkspaceFocusTarget::Bottom),
+        Direction::Down => cycle_workspace_with_focus(state, 1, WorkspaceFocusTarget::Top),
     }
 }
 
@@ -5777,6 +5835,34 @@ fn best_directional_leaf_pane(
     }
 
     best.map(|(leaf, _)| leaf)
+}
+
+fn workspace_edge_leaf_pane(
+    root: &gtk::Widget,
+    target: WorkspaceFocusTarget,
+) -> Option<gtk::Widget> {
+    let mut leaves = Vec::new();
+    collect_leaf_panes(root, &mut leaves);
+
+    leaves
+        .into_iter()
+        .filter_map(|leaf| widget_bounds_in_root(&leaf, root).map(|bounds| (leaf, bounds)))
+        .max_by(|(_, left), (_, right)| {
+            let left_edge = match target {
+                WorkspaceFocusTarget::Top => -left.top,
+                WorkspaceFocusTarget::Bottom => left.bottom,
+                WorkspaceFocusTarget::First => -left.top,
+            };
+            let right_edge = match target {
+                WorkspaceFocusTarget::Top => -right.top,
+                WorkspaceFocusTarget::Bottom => right.bottom,
+                WorkspaceFocusTarget::First => -right.top,
+            };
+            left_edge
+                .partial_cmp(&right_edge)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(leaf, _)| leaf)
 }
 
 /// Recursively find the first visible GLArea inside a widget tree.
