@@ -5087,18 +5087,22 @@ fn split_pane(
     orientation: gtk::Orientation,
     options: SplitPaneOptions,
 ) -> Option<gtk::Widget> {
+    let source_cwd = pane::active_surface_summary(pane_widget)
+        .and_then(|surface| surface.cwd)
+        .filter(|cwd| !cwd.trim().is_empty());
     let (shortcuts, wd, container) = {
         let s = state.borrow();
+        let workspace = s.workspaces.iter().find(|w| w.id == ws_id);
         (
             s.shortcuts.clone(),
-            s.workspaces
-                .iter()
-                .find(|w| w.id == ws_id)
-                .and_then(|ws| ws.folder_path.clone().or_else(|| ws.cwd.borrow().clone())),
-            s.workspaces
-                .iter()
-                .find(|w| w.id == ws_id)
-                .map(|ws| ws.split_container.clone()),
+            workspace.and_then(|ws| {
+                split_working_directory(
+                    source_cwd.as_deref(),
+                    ws.cwd.borrow().as_deref(),
+                    ws.folder_path.as_deref(),
+                )
+            }),
+            workspace.map(|ws| ws.split_container.clone()),
         )
     };
     let container = container?;
@@ -5131,6 +5135,18 @@ fn split_pane(
         request_session_save(state);
     }
     Some(new_pane.upcast())
+}
+
+fn split_working_directory(
+    source_cwd: Option<&str>,
+    workspace_cwd: Option<&str>,
+    workspace_folder: Option<&str>,
+) -> Option<String> {
+    source_cwd
+        .or(workspace_cwd)
+        .or(workspace_folder)
+        .filter(|cwd| !cwd.trim().is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn remove_pane(state: &State, ws_id: &str, pane_widget: &gtk::Widget) {
@@ -6338,6 +6354,31 @@ mod tests {
         ids.sort_unstable();
         assert_eq!(ids, vec![10, 30]);
         assert!(pending_desktop_notification_ids_for_workspace(&routes, "missing").is_empty());
+    }
+
+    #[test]
+    fn split_working_directory_prefers_source_cwd() {
+        assert_eq!(
+            split_working_directory(
+                Some("/tmp/source"),
+                Some("/tmp/workspace-cwd"),
+                Some("/tmp/workspace-folder")
+            ),
+            Some("/tmp/source".to_string())
+        );
+        assert_eq!(
+            split_working_directory(
+                None,
+                Some("/tmp/workspace-cwd"),
+                Some("/tmp/workspace-folder")
+            ),
+            Some("/tmp/workspace-cwd".to_string())
+        );
+        assert_eq!(
+            split_working_directory(None, None, Some("/tmp/workspace-folder")),
+            Some("/tmp/workspace-folder".to_string())
+        );
+        assert_eq!(split_working_directory(Some("  "), None, None), None);
     }
 
     #[test]
