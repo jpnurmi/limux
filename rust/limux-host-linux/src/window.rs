@@ -4820,7 +4820,7 @@ fn refresh_window_title(state: &State) {
 }
 
 fn switch_workspace(state: &State, idx: usize) {
-    let (stack, stack_name, unread_handles, focus_root, _workspace_name) = {
+    let (stack, stack_name, unread_handles, focus_root, workspace_id, _workspace_name) = {
         let mut s = state.borrow_mut();
         if idx >= s.workspaces.len() || idx == s.active_idx {
             return;
@@ -4829,6 +4829,7 @@ fn switch_workspace(state: &State, idx: usize) {
         let stack = s.stack.clone();
         let stack_name = format!("ws-{}", s.workspaces[idx].id);
         let focus_root = s.workspaces[idx].root.clone();
+        let workspace_id = s.workspaces[idx].id.clone();
         let workspace_name = s.workspaces[idx].name.clone();
 
         let unread_handles = if s.workspaces[idx].unread {
@@ -4848,6 +4849,7 @@ fn switch_workspace(state: &State, idx: usize) {
             stack_name,
             unread_handles,
             focus_root,
+            workspace_id,
             workspace_name,
         )
     };
@@ -4870,6 +4872,7 @@ fn switch_workspace(state: &State, idx: usize) {
         }
     }
 
+    close_desktop_notifications_for_workspace(state, &workspace_id);
     request_session_save(state);
 }
 
@@ -5856,6 +5859,61 @@ fn desktop_notification_actions() -> Vec<String> {
     vec!["default".to_string(), "Open".to_string()]
 }
 
+fn pending_desktop_notification_ids_for_workspace(
+    routes: &HashMap<u32, DesktopNotificationRoute>,
+    workspace_id: &str,
+) -> Vec<u32> {
+    routes
+        .iter()
+        .filter_map(|(id, route)| (route.target.workspace_id == workspace_id).then_some(*id))
+        .collect()
+}
+
+fn close_desktop_notifications_for_workspace(state: &State, workspace_id: &str) {
+    let notification_ids = {
+        let mut s = state.borrow_mut();
+        let ids = pending_desktop_notification_ids_for_workspace(
+            &s.desktop_notification_routes,
+            workspace_id,
+        );
+        for id in &ids {
+            s.desktop_notification_routes.remove(id);
+        }
+        ids
+    };
+
+    if notification_ids.is_empty() {
+        return;
+    }
+
+    gio::DBusProxy::for_bus(
+        gio::BusType::Session,
+        gio::DBusProxyFlags::NONE,
+        None::<&gio::DBusInterfaceInfo>,
+        FREEDESKTOP_NOTIFICATIONS_SERVICE,
+        FREEDESKTOP_NOTIFICATIONS_PATH,
+        FREEDESKTOP_NOTIFICATIONS_INTERFACE,
+        None::<&gio::Cancellable>,
+        move |result| {
+            let Ok(proxy) = result else {
+                return;
+            };
+
+            for notification_id in notification_ids {
+                let params = (notification_id,).to_variant();
+                proxy.call(
+                    "CloseNotification",
+                    Some(&params),
+                    gio::DBusCallFlags::NONE,
+                    DESKTOP_NOTIFICATION_DBUS_TIMEOUT_MS,
+                    None::<&gio::Cancellable>,
+                    |_| {},
+                );
+            }
+        },
+    );
+}
+
 fn show_desktop_notification(state: &State, request: DesktopNotificationRequest) {
     let state = state.clone();
     gio::DBusProxy::for_bus(
@@ -5887,6 +5945,7 @@ fn show_desktop_notification(state: &State, request: DesktopNotificationRequest)
             )
                 .to_variant();
 
+            let proxy_for_close = proxy.clone();
             proxy.call(
                 "Notify",
                 Some(&params),
@@ -5902,10 +5961,30 @@ fn show_desktop_notification(state: &State, request: DesktopNotificationRequest)
                         return;
                     };
 
-                    state
-                        .borrow_mut()
-                        .desktop_notification_routes
-                        .insert(notification_id, route.clone());
+                    let target_workspace_is_active = {
+                        let mut s = state.borrow_mut();
+                        let active_workspace_id =
+                            s.active_workspace().map(|workspace| workspace.id.as_str());
+                        if active_workspace_id == Some(route.target.workspace_id.as_str()) {
+                            true
+                        } else {
+                            s.desktop_notification_routes
+                                .insert(notification_id, route.clone());
+                            false
+                        }
+                    };
+
+                    if target_workspace_is_active {
+                        let params = (notification_id,).to_variant();
+                        proxy_for_close.call(
+                            "CloseNotification",
+                            Some(&params),
+                            gio::DBusCallFlags::NONE,
+                            DESKTOP_NOTIFICATION_DBUS_TIMEOUT_MS,
+                            None::<&gio::Cancellable>,
+                            |_| {},
+                        );
+                    }
                 },
             );
         },
@@ -5915,6 +5994,7 @@ fn show_desktop_notification(state: &State, request: DesktopNotificationRequest)
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::collections::HashMap;
     use std::rc::Rc;
 
     use super::glib;
@@ -6214,6 +6294,50 @@ mod tests {
             desktop_notification_closed_id_from_signal(&(42u32, 2u32).to_variant()),
             Some(42)
         );
+    }
+
+    #[test]
+    fn pending_desktop_notifications_match_target_workspace() {
+        let routes = HashMap::from([
+            (
+                10,
+                DesktopNotificationRoute {
+                    target: DesktopNotificationTarget {
+                        workspace_id: "alpha".to_string(),
+                        pane_id: None,
+                        tab_id: None,
+                    },
+                    activation_token: None,
+                },
+            ),
+            (
+                20,
+                DesktopNotificationRoute {
+                    target: DesktopNotificationTarget {
+                        workspace_id: "beta".to_string(),
+                        pane_id: Some(7),
+                        tab_id: Some("tab-7".to_string()),
+                    },
+                    activation_token: Some("token".to_string()),
+                },
+            ),
+            (
+                30,
+                DesktopNotificationRoute {
+                    target: DesktopNotificationTarget {
+                        workspace_id: "alpha".to_string(),
+                        pane_id: Some(9),
+                        tab_id: Some("tab-9".to_string()),
+                    },
+                    activation_token: None,
+                },
+            ),
+        ]);
+
+        let mut ids = pending_desktop_notification_ids_for_workspace(&routes, "alpha");
+        ids.sort_unstable();
+        assert_eq!(ids, vec![10, 30]);
+        assert!(pending_desktop_notification_ids_for_workspace(&routes, "missing").is_empty());
     }
 
     #[test]
