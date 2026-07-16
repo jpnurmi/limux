@@ -218,7 +218,7 @@ Most host-owned defaults use `Ctrl+Alt` so plain terminal `Ctrl` editing keys pa
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl+Alt+Shift+N` | New workspace (folder picker) |
+| `Ctrl+Alt+Shift+N` | New workspace in current working directory |
 | `Ctrl+Alt+Shift+W` | Close workspace |
 | `Ctrl+Alt+Shift+Left/Right` | Cycle tabs in focused pane |
 | `Ctrl+Alt+Shift+D` | Split down |

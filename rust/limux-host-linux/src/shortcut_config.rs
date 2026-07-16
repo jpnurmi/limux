@@ -320,7 +320,7 @@ const SHORTCUT_DEFINITIONS: [ShortcutDefinition; 49] = [
         action_name: "win.new-workspace",
         default_accel: "<Ctrl><Alt><Shift>n",
         label: "New Workspace",
-        registers_gtk_accel: true,
+        registers_gtk_accel: false,
         command: ShortcutCommand::NewWorkspace,
         scope: ShortcutScope::Window,
         editable_capture_policy: EditableCapturePolicy::BypassInEditable,
@@ -1745,7 +1745,6 @@ mod tests {
         assert_eq!(
             gtk_actions,
             vec![
-                "win.new-workspace",
                 "win.close-workspace",
                 "app.quit",
                 "app.new-instance",
@@ -2151,7 +2150,7 @@ mod tests {
         .unwrap();
 
         let gtk_accels = resolved.gtk_accel_entries();
-        assert_eq!(gtk_accels.len(), 9);
+        assert_eq!(gtk_accels.len(), 8);
         assert_eq!(
             gtk_accels
                 .iter()

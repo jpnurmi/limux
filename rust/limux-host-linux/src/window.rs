@@ -877,7 +877,7 @@ fn apply_loaded_session(state: &State, mut loaded: LoadedSession) {
             );
         }
         for workspace in &loaded.state.workspaces {
-            add_workspace_from_state(state, workspace);
+            add_workspace_from_state(state, workspace, WorkspaceInsertMode::Append);
         }
         restore_active_workspace(state, loaded.state.active_workspace_index);
         apply_sidebar_state_immediately(state, &loaded.state.sidebar);
@@ -1428,6 +1428,7 @@ pub fn build_window(app: &adw::Application) {
     let hamburger_menu = gio::Menu::new();
     let section1 = gio::Menu::new();
     section1.append(Some("New workspace"), Some("win.new-workspace"));
+    section1.append(Some("Open workspace…"), Some("win.open-workspace"));
     hamburger_menu.append_section(None, &section1);
     let section2 = gio::Menu::new();
     section2.append(Some("Settings"), Some("win.settings"));
@@ -1486,6 +1487,14 @@ pub fn build_window(app: &adw::Application) {
         .build();
     new_ws_btn.add_css_class("limux-sidebar-title-btn");
     sidebar_title.append(&new_ws_btn);
+
+    let open_ws_btn = gtk::Button::builder()
+        .icon_name("folder-open-symbolic")
+        .tooltip_text("Open workspace…")
+        .has_frame(false)
+        .build();
+    open_ws_btn.add_css_class("limux-sidebar-title-btn");
+    sidebar_title.append(&open_ws_btn);
 
     {
         let window = window.clone();
@@ -1714,7 +1723,14 @@ pub fn build_window(app: &adw::Application) {
     {
         let state = state.clone();
         new_ws_btn.connect_clicked(move |_| {
-            add_workspace(&state, None);
+            create_workspace_with_current_cwd(&state);
+        });
+    }
+
+    {
+        let state = state.clone();
+        open_ws_btn.connect_clicked(move |_| {
+            show_workspace_path_dialog(&state);
         });
     }
 
@@ -1930,6 +1946,15 @@ fn register_window_actions(window: &adw::ApplicationWindow, state: &State) {
         });
         window.add_action(&action);
     }
+
+    {
+        let action = gtk::gio::SimpleAction::new("open-workspace", None);
+        let state = state.clone();
+        action.connect_activate(move |_, _| {
+            show_workspace_path_dialog(&state);
+        });
+        window.add_action(&action);
+    }
 }
 
 fn register_app_actions(app: &adw::Application, state: &State) {
@@ -2114,7 +2139,7 @@ fn shortcut_match_from_key_press(
 fn dispatch_shortcut_command(state: &State, command: ShortcutCommand) -> bool {
     match command {
         ShortcutCommand::NewWorkspace => {
-            add_workspace(state, None);
+            create_workspace_with_current_cwd(state);
             true
         }
         ShortcutCommand::CloseWorkspace => {
@@ -3074,6 +3099,35 @@ fn clamp_workspace_insert_index_for_pinning(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkspaceInsertMode {
+    Append,
+    AfterActive,
+}
+
+fn workspace_insert_index(
+    favorite_flags: &[bool],
+    moving_is_favorite: bool,
+    active_idx: usize,
+    mode: WorkspaceInsertMode,
+) -> usize {
+    match mode {
+        WorkspaceInsertMode::Append => favorite_flags.len(),
+        WorkspaceInsertMode::AfterActive => {
+            let proposed_index = if favorite_flags.is_empty() {
+                0
+            } else {
+                active_idx.saturating_add(1).min(favorite_flags.len())
+            };
+            clamp_workspace_insert_index_for_pinning(
+                favorite_flags,
+                moving_is_favorite,
+                proposed_index,
+            )
+        }
+    }
+}
+
 fn sync_sidebar_row_order(state: &mut AppState) {
     while let Some(child) = state.sidebar_list.first_child() {
         state.sidebar_list.remove(&child);
@@ -3577,10 +3631,6 @@ fn install_workspace_row_interactions(
     }
 }
 
-fn add_workspace(state: &State, _working_directory: Option<&str>) {
-    show_workspace_path_dialog(state);
-}
-
 fn active_window(state: &State) -> Option<gtk::Window> {
     let s = state.borrow();
     s.stack
@@ -3806,7 +3856,37 @@ fn create_workspace_with_folder(state: &State, name: &str, folder_path: &str) {
         folder_path: Some(folder_path.to_string()),
         layout: LayoutNodeState::Pane(PaneState::fallback(Some(folder_path))),
     };
-    add_workspace_from_state(state, &workspace);
+    add_workspace_from_state(state, &workspace, WorkspaceInsertMode::Append);
+    request_session_save(state);
+}
+
+fn create_workspace_with_current_cwd(state: &State) {
+    let folder_path = {
+        let s = state.borrow();
+        s.active_workspace()
+            .and_then(|workspace| workspace.cwd.borrow().clone())
+            .filter(|cwd| !cwd.is_empty())
+            .map(PathBuf::from)
+    }
+    .or_else(|| std::env::current_dir().ok())
+    .or_else(dirs::home_dir)
+    .unwrap_or_else(|| PathBuf::from("/"));
+    let path_text = folder_path.to_string_lossy().to_string();
+    let name = folder_path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| path_text.clone());
+
+    let workspace = WorkspaceState {
+        id: None,
+        name,
+        favorite: false,
+        cwd: Some(path_text.clone()),
+        folder_path: None,
+        layout: LayoutNodeState::Pane(PaneState::fallback(Some(&path_text))),
+    };
+    add_workspace_from_state(state, &workspace, WorkspaceInsertMode::AfterActive);
     request_session_save(state);
 }
 
@@ -4421,7 +4501,11 @@ fn handle_control_command(state: &State, command: ControlCommand) {
     }
 }
 
-fn add_workspace_from_state(state: &State, workspace: &WorkspaceState) {
+fn add_workspace_from_state(
+    state: &State,
+    workspace: &WorkspaceState,
+    insert_mode: WorkspaceInsertMode,
+) {
     let shortcuts = {
         let s = state.borrow();
         s.shortcuts.clone()
@@ -4474,8 +4558,16 @@ fn add_workspace_from_state(state: &State, workspace: &WorkspaceState) {
 
     {
         let mut s = state.borrow_mut();
-        s.workspaces.push(ws);
-        s.active_idx = s.workspaces.len() - 1;
+        let favorite_flags: Vec<bool> = s
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.favorite)
+            .collect();
+        let insert_idx =
+            workspace_insert_index(&favorite_flags, ws.favorite, s.active_idx, insert_mode);
+        s.workspaces.insert(insert_idx, ws);
+        s.active_idx = insert_idx;
+        sync_sidebar_row_order(&mut s);
     }
 
     stack.set_visible_child_name(&stack_name);
@@ -5836,16 +5928,17 @@ mod tests {
         desktop_notification_closed_id_from_signal, desktop_notification_id_from_response,
         directional_neighbor_score, favorites_prefix_len, font_size_after_delta,
         ghostty_prefers_dark, gtk_system_prefers_dark_from_raw, next_active_workspace_index,
-        pane_create_split_placement, queue_session_save_request, resolve_pane_create_source_id,
-        resolved_system_prefers_dark, sanitize_background_opacity,
-        shortcut_allowed_while_browser_find_active, shortcut_blocked_by_editable,
-        shortcut_command_from_key_event, shortcut_dispatch_propagation,
-        should_emit_desktop_notification,
+        pane_create_split_placement, pending_desktop_notification_ids_for_workspace,
+        queue_session_save_request, resolve_pane_create_source_id, resolved_system_prefers_dark,
+        sanitize_background_opacity, shortcut_allowed_while_browser_find_active,
+        shortcut_blocked_by_editable, shortcut_command_from_key_event,
+        shortcut_dispatch_propagation, should_emit_desktop_notification, split_working_directory,
         validate_workspace_folder_input_with_dirs, workspace_drop_layout_path,
-        workspace_folder_path_from_input, workspace_notification_message, Direction,
+        workspace_folder_path_from_input, workspace_insert_index, workspace_notification_message,
+        workspace_sidebar_path, DesktopNotificationRoute, DesktopNotificationTarget, Direction,
         EditableCaptureContext, NeighborScore, PaneBounds, PaneCreateDirection,
         PaneCreateTargetError, PortalColorSchemePreference, SessionSaveAccess, SessionSaveRequest,
-        BASE_CSS, HOST_ENTRY_CSS_CLASS, WORKSPACE_RENAME_ENTRY_CSS_CLASS,
+        WorkspaceInsertMode, BASE_CSS, HOST_ENTRY_CSS_CLASS, WORKSPACE_RENAME_ENTRY_CSS_CLASS,
         WORKSPACE_RENAME_ENTRY_CSS_CLASSES,
     };
     use crate::layout_state::{LayoutNodeState, PaneState, SplitOrientation, SplitState};
@@ -6183,6 +6276,44 @@ mod tests {
         let clamped =
             clamp_workspace_insert_index_for_pinning(&after_removal, true, after_removal.len());
         assert_eq!(clamped, 2);
+    }
+
+    #[test]
+    fn workspace_append_insert_mode_uses_end_without_reordering_favorites() {
+        assert_eq!(
+            workspace_insert_index(&[true, false], true, 0, WorkspaceInsertMode::Append),
+            2
+        );
+        assert_eq!(
+            workspace_insert_index(&[true, false], false, 0, WorkspaceInsertMode::Append),
+            2
+        );
+    }
+
+    #[test]
+    fn workspace_after_active_insert_mode_inserts_after_current_workspace() {
+        assert_eq!(
+            workspace_insert_index(
+                &[false, false, false],
+                false,
+                1,
+                WorkspaceInsertMode::AfterActive,
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn workspace_after_active_insert_mode_respects_favorite_boundary() {
+        assert_eq!(
+            workspace_insert_index(
+                &[true, true, false],
+                false,
+                0,
+                WorkspaceInsertMode::AfterActive,
+            ),
+            2
+        );
     }
 
     #[test]
