@@ -389,9 +389,9 @@ pub fn normalize_session(mut state: AppSessionState) -> AppSessionState {
         normalize_layout(
             &mut workspace.layout,
             workspace
-                .folder_path
+                .cwd
                 .as_deref()
-                .or(workspace.cwd.as_deref()),
+                .or(workspace.folder_path.as_deref()),
         );
     }
     state
@@ -429,9 +429,9 @@ impl AppSessionState {
             .into_iter()
             .map(|workspace| {
                 let working_directory = workspace
-                    .folder_path
+                    .cwd
                     .as_deref()
-                    .or(workspace.cwd.as_deref());
+                    .or(workspace.folder_path.as_deref());
                 let tab = TabState::terminal(default_tab_id("legacy-terminal"), working_directory);
                 WorkspaceState {
                     id: None,
@@ -1041,6 +1041,26 @@ mod tests {
     }
 
     #[test]
+    fn legacy_migration_prefers_cwd_over_folder_path_for_terminal_fallback() {
+        let state = AppSessionState::from_legacy(vec![LegacySavedWorkspace {
+            name: "legacy".to_string(),
+            favorite: false,
+            cwd: Some("/tmp/current".to_string()),
+            folder_path: Some("/tmp/original".to_string()),
+        }]);
+
+        let LayoutNodeState::Pane(pane) = &state.workspaces[0].layout else {
+            panic!("legacy migration should create a pane layout");
+        };
+        match &pane.tabs[0].content {
+            TabContentState::Terminal { cwd, .. } => {
+                assert_eq!(cwd.as_deref(), Some("/tmp/current"));
+            }
+            other => panic!("expected terminal tab, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn load_returns_empty_state_for_corrupt_canonical_file() {
         let dir = tempdir().expect("tempdir");
         let canonical_path = canonical_session_path_in(dir.path());
@@ -1573,6 +1593,36 @@ mod tests {
         match &pane.tabs[0].content {
             TabContentState::Terminal { cwd, .. } => {
                 assert_eq!(cwd.as_deref(), Some("/tmp/project"));
+            }
+            other => panic!("expected terminal fallback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn normalize_session_prefers_workspace_cwd_over_folder_path_for_empty_panes() {
+        let state = AppSessionState {
+            workspaces: vec![WorkspaceState {
+                id: None,
+                name: "workspace".to_string(),
+                favorite: false,
+                cwd: Some("/tmp/current".to_string()),
+                folder_path: Some("/tmp/original".to_string()),
+                layout: LayoutNodeState::Pane(PaneState {
+                    pane_id: None,
+                    active_tab_id: None,
+                    tabs: Vec::new(),
+                }),
+            }],
+            ..AppSessionState::default()
+        };
+
+        let state = normalize_session(state);
+        let LayoutNodeState::Pane(pane) = &state.workspaces[0].layout else {
+            panic!("expected pane layout");
+        };
+        match &pane.tabs[0].content {
+            TabContentState::Terminal { cwd, .. } => {
+                assert_eq!(cwd.as_deref(), Some("/tmp/current"));
             }
             other => panic!("expected terminal fallback, got {other:?}"),
         }

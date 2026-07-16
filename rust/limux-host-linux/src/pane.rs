@@ -2054,6 +2054,23 @@ pub fn active_surface_summary(pane_widget: &gtk::Widget) -> Option<SurfaceSummar
     })
 }
 
+pub fn first_terminal_cwd_in_pane(pane_widget: &gtk::Widget) -> Option<String> {
+    let internals = find_pane_internals(pane_widget)?;
+    let tab_state = internals.tab_state.borrow();
+
+    tab_state.tabs.iter().find_map(|entry| {
+        if let TabKind::Terminal { state } = &entry.kind {
+            state
+                .cwd
+                .borrow()
+                .clone()
+                .filter(|cwd| !cwd.trim().is_empty())
+        } else {
+            None
+        }
+    })
+}
+
 pub fn terminal_handle_for_root(
     root: &gtk::Widget,
     surface_hint: Option<&str>,

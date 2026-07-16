@@ -954,7 +954,7 @@ fn snapshot_session_state(state: &State) -> AppSessionState {
         .map(|workspace| {
             let cwd = workspace.cwd.borrow().clone();
             let folder_path = workspace.folder_path.clone();
-            let working_directory = folder_path.clone().or(cwd.clone());
+            let working_directory = cwd.clone().or(folder_path.clone());
             let mut layout = workspace
                 .split_container
                 .tree()
@@ -2949,13 +2949,7 @@ fn build_sidebar_row(
         .margin_start(8)
         .build();
     path_label.add_css_class("limux-ws-path");
-    if let Some(p) = folder_path {
-        path_label.set_label(&abbreviate_path(p));
-        path_label.set_tooltip_text(Some(p));
-        path_label.set_visible(true);
-    } else {
-        path_label.set_visible(false);
-    }
+    update_workspace_path_label(&path_label, folder_path);
 
     let notify_label = gtk::Label::builder()
         .xalign(0.0)
@@ -2985,6 +2979,72 @@ fn build_sidebar_row(
         notify_label,
         path_label,
     )
+}
+
+fn update_workspace_path_label(path_label: &gtk::Label, path: Option<&str>) {
+    if let Some(path) = path.filter(|path| !path.trim().is_empty()) {
+        path_label.set_label(&abbreviate_path(path));
+        path_label.set_tooltip_text(Some(path));
+        path_label.set_visible(true);
+    } else {
+        path_label.set_label("");
+        path_label.set_tooltip_text(None);
+        path_label.set_visible(false);
+    }
+}
+
+fn workspace_sidebar_path<'a>(
+    cwd: Option<&'a str>,
+    folder_path: Option<&'a str>,
+) -> Option<&'a str> {
+    cwd.filter(|path| !path.trim().is_empty())
+        .or_else(|| folder_path.filter(|path| !path.trim().is_empty()))
+}
+
+fn first_workspace_terminal_cwd(root: &gtk::Widget) -> Option<String> {
+    let mut panes = Vec::new();
+    collect_leaf_panes(root, &mut panes);
+
+    panes
+        .into_iter()
+        .find_map(|pane| pane::first_terminal_cwd_in_pane(&pane))
+}
+
+fn refresh_workspace_cwd_and_subtitle(state: &State, workspace_id: &str) {
+    let Some((root, cwd, folder_path, path_label)) = ({
+        let s = state.borrow();
+        s.workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .map(|workspace| {
+                (
+                    workspace.root.clone(),
+                    workspace.cwd.clone(),
+                    workspace.folder_path.clone(),
+                    workspace.path_label.clone(),
+                )
+            })
+    }) else {
+        return;
+    };
+
+    let primary_cwd = first_workspace_terminal_cwd(&root);
+    *cwd.borrow_mut() = primary_cwd.clone();
+    update_workspace_path_label(
+        &path_label,
+        workspace_sidebar_path(primary_cwd.as_deref(), folder_path.as_deref()),
+    );
+}
+
+fn refresh_active_workspace_cwd_and_subtitle(state: &State) {
+    let workspace_id = {
+        let s = state.borrow();
+        s.active_workspace().map(|workspace| workspace.id.clone())
+    };
+
+    if let Some(workspace_id) = workspace_id {
+        refresh_workspace_cwd_and_subtitle(state, &workspace_id);
+    }
 }
 
 /// Abbreviate a path by replacing the home directory with ~.
@@ -4522,19 +4582,22 @@ fn add_workspace_from_state(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let stack_name = format!("ws-{id}");
     let working_dir = workspace
-        .folder_path
+        .cwd
         .as_deref()
-        .or(workspace.cwd.as_deref());
+        .or(workspace.folder_path.as_deref());
     let (root, split_container) =
         build_workspace_root(state, &shortcuts, &id, working_dir, &workspace.layout);
     stack.add_named(&root, Some(&stack_name));
 
+    let sidebar_path =
+        workspace_sidebar_path(workspace.cwd.as_deref(), workspace.folder_path.as_deref());
     let (row, name_label, favorite_button, notify_dot, notify_label, path_label) =
-        build_sidebar_row(&workspace.name, workspace.folder_path.as_deref());
+        build_sidebar_row(&workspace.name, sidebar_path);
     sidebar_list.append(&row);
     install_workspace_row_interactions(state, &id, &row, &favorite_button);
 
     let cwd: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(workspace.cwd.clone()));
+    let workspace_id = id.clone();
     let ws = Workspace {
         id,
         name: workspace.name.clone(),
@@ -4573,6 +4636,7 @@ fn add_workspace_from_state(
     stack.set_visible_child_name(&stack_name);
     sidebar_list.select_row(Some(&row));
 
+    refresh_workspace_cwd_and_subtitle(state, &workspace_id);
     refresh_window_title(state);
 }
 
@@ -4601,6 +4665,7 @@ pub(crate) fn create_pane_for_workspace(
     let state_for_split_with_tab = state.clone();
     let state_for_config = state.clone();
     let ws_id_split_with_tab = ws_id.to_string();
+    let ws_id_state_changed = ws_id.to_string();
     let ws_id_for_env = ws_id.to_string();
 
     let callbacks = Rc::new(PaneCallbacks {
@@ -4679,17 +4744,11 @@ pub(crate) fn create_pane_for_workspace(
             let state = state.clone();
             Rc::new(move |id, binding| persist_shortcut_binding(&state, id, binding))
         },
-        on_pwd_changed: Box::new(move |pwd: &str| {
+        on_pwd_changed: Box::new(move |_pwd: &str| {
             let state = state_for_pwd.clone();
             let ws_id = ws_id_pwd.clone();
-            let pwd = pwd.to_string();
             glib::idle_add_local_once(move || {
-                {
-                    let s = state.borrow();
-                    if let Some(ws) = s.workspaces.iter().find(|w| w.id == ws_id) {
-                        *ws.cwd.borrow_mut() = Some(pwd);
-                    }
-                }
+                refresh_workspace_cwd_and_subtitle(&state, &ws_id);
                 refresh_window_title(&state);
             });
         }),
@@ -4699,10 +4758,15 @@ pub(crate) fn create_pane_for_workspace(
         }),
         on_state_changed: Box::new({
             let state = state.clone();
+            let ws_id = ws_id_state_changed.clone();
             move || {
                 request_session_save(&state);
                 let s = state.clone();
-                glib::idle_add_local_once(move || refresh_window_title(&s));
+                let ws_id = ws_id.clone();
+                glib::idle_add_local_once(move || {
+                    refresh_workspace_cwd_and_subtitle(&s, &ws_id);
+                    refresh_window_title(&s);
+                });
             }
         }),
         on_split_with_tab: Box::new(
@@ -4859,6 +4923,7 @@ fn switch_workspace(state: &State, idx: usize) {
         focus_workspace_entrypoint(&focus_root);
     });
 
+    refresh_active_workspace_cwd_and_subtitle(state);
     refresh_window_title(state);
 
     if let Some((notify_dot, notify_label, sidebar_row)) = unread_handles {
@@ -6379,6 +6444,23 @@ mod tests {
             Some("/tmp/workspace-folder".to_string())
         );
         assert_eq!(split_working_directory(Some("  "), None, None), None);
+    }
+
+    #[test]
+    fn workspace_sidebar_path_prefers_cwd_and_falls_back_to_folder_path() {
+        assert_eq!(
+            workspace_sidebar_path(Some("/tmp/cwd"), Some("/tmp/folder")),
+            Some("/tmp/cwd")
+        );
+        assert_eq!(
+            workspace_sidebar_path(Some("  "), Some("/tmp/folder")),
+            Some("/tmp/folder")
+        );
+        assert_eq!(
+            workspace_sidebar_path(None, Some("/tmp/folder")),
+            Some("/tmp/folder")
+        );
+        assert_eq!(workspace_sidebar_path(None, Some("  ")), None);
     }
 
     #[test]
