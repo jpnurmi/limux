@@ -54,6 +54,11 @@ pub struct WorkspaceState {
     #[serde(default)]
     pub id: Option<String>,
     pub name: String,
+    #[serde(
+        default = "default_workspace_name_explicit",
+        skip_serializing_if = "workspace_name_is_explicit"
+    )]
+    pub name_explicit: bool,
     #[serde(default)]
     pub favorite: bool,
     #[serde(default)]
@@ -61,6 +66,14 @@ pub struct WorkspaceState {
     #[serde(default)]
     pub folder_path: Option<String>,
     pub layout: LayoutNodeState,
+}
+
+fn default_workspace_name_explicit() -> bool {
+    true
+}
+
+fn workspace_name_is_explicit(explicit: &bool) -> bool {
+    *explicit
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
@@ -436,6 +449,7 @@ impl AppSessionState {
                 WorkspaceState {
                     id: None,
                     name: workspace.name,
+                    name_explicit: true,
                     favorite: workspace.favorite,
                     cwd: workspace.cwd,
                     folder_path: workspace.folder_path,
@@ -979,6 +993,7 @@ mod tests {
             workspaces: vec![WorkspaceState {
                 id: Some("11111111-1111-4111-8111-111111111111".to_string()),
                 name: "canonical".to_string(),
+                name_explicit: true,
                 favorite: true,
                 cwd: Some("/canonical".to_string()),
                 folder_path: Some("/canonical".to_string()),
@@ -1100,6 +1115,7 @@ mod tests {
             workspaces: vec![WorkspaceState {
                 id: Some("22222222-2222-4222-8222-222222222222".to_string()),
                 name: "workspace".to_string(),
+                name_explicit: false,
                 favorite: false,
                 cwd: Some("/tmp".to_string()),
                 folder_path: Some("/tmp".to_string()),
@@ -1119,6 +1135,7 @@ mod tests {
             Some("22222222-2222-4222-8222-222222222222")
         );
         assert_eq!(decoded.workspaces[0].name, "workspace");
+        assert!(!decoded.workspaces[0].name_explicit);
     }
 
     #[test]
@@ -1142,6 +1159,7 @@ mod tests {
 
         let decoded: AppSessionState = serde_json::from_str(raw).expect("decode legacy shape");
         assert_eq!(decoded.workspaces[0].id, None);
+        assert!(decoded.workspaces[0].name_explicit);
     }
 
     #[test]
@@ -1604,6 +1622,7 @@ mod tests {
             workspaces: vec![WorkspaceState {
                 id: None,
                 name: "workspace".to_string(),
+                name_explicit: true,
                 favorite: false,
                 cwd: Some("/tmp/current".to_string()),
                 folder_path: Some("/tmp/original".to_string()),
@@ -1649,6 +1668,7 @@ mod tests {
             workspaces: vec![WorkspaceState {
                 id: Some("33333333-3333-4333-8333-333333333333".to_string()),
                 name: "workspace".to_string(),
+                name_explicit: true,
                 favorite: false,
                 cwd: None,
                 folder_path: None,

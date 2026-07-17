@@ -37,6 +37,7 @@ const PANE_CREATE_COMMAND_READY_ATTEMPTS: u32 = 40;
 struct Workspace {
     id: String,
     name: String,
+    name_explicit: bool,
     /// The root widget in the content stack for this workspace.
     root: gtk::Widget,
     /// Manages the split tree data model and async widget rebuild.
@@ -967,6 +968,7 @@ fn snapshot_session_state(state: &State) -> AppSessionState {
             WorkspaceState {
                 id: Some(workspace.id.clone()),
                 name: workspace.name.clone(),
+                name_explicit: workspace.name_explicit,
                 favorite: workspace.favorite,
                 cwd,
                 folder_path,
@@ -3010,6 +3012,31 @@ fn first_workspace_terminal_cwd(root: &gtk::Widget) -> Option<String> {
         .find_map(|pane| pane::first_terminal_cwd_in_pane(&pane))
 }
 
+fn workspace_name_from_cwd(cwd: &str) -> Option<String> {
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return None;
+    }
+
+    Path::new(cwd)
+        .components()
+        .next_back()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .filter(|name| !name.is_empty())
+}
+
+fn automatic_workspace_name(
+    current_name: &str,
+    name_explicit: bool,
+    primary_cwd: Option<&str>,
+) -> Option<String> {
+    if name_explicit {
+        return None;
+    }
+
+    workspace_name_from_cwd(primary_cwd?).filter(|name| name != current_name)
+}
+
 fn refresh_workspace_cwd_and_subtitle(state: &State, workspace_id: &str) {
     let Some((root, cwd, folder_path, path_label)) = ({
         let s = state.borrow();
@@ -3030,6 +3057,23 @@ fn refresh_workspace_cwd_and_subtitle(state: &State, workspace_id: &str) {
 
     let primary_cwd = first_workspace_terminal_cwd(&root);
     *cwd.borrow_mut() = primary_cwd.clone();
+    {
+        let mut s = state.borrow_mut();
+        if let Some(workspace) = s
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)
+        {
+            if let Some(name) = automatic_workspace_name(
+                &workspace.name,
+                workspace.name_explicit,
+                primary_cwd.as_deref(),
+            ) {
+                workspace.name = name.clone();
+                workspace.name_label.set_label(&name);
+            }
+        }
+    }
     update_workspace_path_label(
         &path_label,
         workspace_sidebar_path(primary_cwd.as_deref(), folder_path.as_deref()),
@@ -3328,6 +3372,7 @@ fn begin_workspace_inline_rename(state: &State, workspace_id: &str) {
                     .find(|workspace| workspace.id == workspace_id)
                 {
                     workspace.name = next_name.clone();
+                    workspace.name_explicit = true;
                 }
                 drop(s);
                 refresh_window_title(&state_for_commit);
@@ -3767,6 +3812,7 @@ fn show_workspace_path_dialog(state: &State) {
                 create_workspace_with_folder(
                     &state_for_open,
                     &selection.name,
+                    false,
                     selection.path_text.as_str(),
                 );
                 dialog_for_open.close();
@@ -3868,11 +3914,7 @@ fn validate_workspace_folder_input_with_dirs(
     }
 
     let path_text = path.to_string_lossy().to_string();
-    let name = path
-        .file_name()
-        .map(|segment| segment.to_string_lossy().to_string())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| path_text.clone());
+    let name = workspace_name_from_cwd(&path_text).unwrap_or_else(|| path_text.clone());
     Ok(WorkspaceFolderSelection { name, path_text })
 }
 
@@ -3907,10 +3949,11 @@ fn workspace_folder_path_from_input(
     }
 }
 
-fn create_workspace_with_folder(state: &State, name: &str, folder_path: &str) {
+fn create_workspace_with_folder(state: &State, name: &str, name_explicit: bool, folder_path: &str) {
     let workspace = WorkspaceState {
         id: None,
         name: name.to_string(),
+        name_explicit,
         favorite: false,
         cwd: Some(folder_path.to_string()),
         folder_path: Some(folder_path.to_string()),
@@ -3932,15 +3975,12 @@ fn create_workspace_with_current_cwd(state: &State) {
     .or_else(dirs::home_dir)
     .unwrap_or_else(|| PathBuf::from("/"));
     let path_text = folder_path.to_string_lossy().to_string();
-    let name = folder_path
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| path_text.clone());
+    let name = workspace_name_from_cwd(&path_text).unwrap_or_else(|| path_text.clone());
 
     let workspace = WorkspaceState {
         id: None,
         name,
+        name_explicit: false,
         favorite: false,
         cwd: Some(path_text.clone()),
         folder_path: None,
@@ -4202,15 +4242,12 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 .map(|path| path.to_string_lossy().to_string())
                 .unwrap_or_default();
             let folder_path = cwd.as_deref().unwrap_or(&home);
+            let name_explicit = name.is_some();
             let title = name.unwrap_or_else(|| {
-                std::path::Path::new(folder_path)
-                    .file_name()
-                    .map(|name| name.to_string_lossy().to_string())
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or_else(|| "workspace".to_string())
+                workspace_name_from_cwd(folder_path).unwrap_or_else(|| "workspace".to_string())
             });
 
-            create_workspace_with_folder(state, &title, folder_path);
+            create_workspace_with_folder(state, &title, name_explicit, folder_path);
 
             let result = {
                 let app_state = state.borrow();
@@ -4299,6 +4336,7 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 let mut app_state = state.borrow_mut();
                 let workspace = &mut app_state.workspaces[index];
                 workspace.name = title.clone();
+                workspace.name_explicit = true;
                 workspace.name_label.set_label(&title);
             }
 
@@ -4601,6 +4639,7 @@ fn add_workspace_from_state(
     let ws = Workspace {
         id,
         name: workspace.name.clone(),
+        name_explicit: workspace.name_explicit,
         root,
         split_container,
         sidebar_row: row.clone(),
@@ -6169,7 +6208,7 @@ mod tests {
     use super::gtk::gdk;
     use super::ToVariant;
     use super::{
-        build_window_css, clamp_workspace_insert_index_for_pinning,
+        automatic_workspace_name, build_window_css, clamp_workspace_insert_index_for_pinning,
         desktop_notification_action_from_signal, desktop_notification_actions,
         desktop_notification_activation_token_from_signal,
         desktop_notification_closed_id_from_signal, desktop_notification_id_from_response,
@@ -6547,6 +6586,30 @@ mod tests {
             Some("/tmp/folder")
         );
         assert_eq!(workspace_sidebar_path(None, Some("  ")), None);
+    }
+
+    #[test]
+    fn automatic_workspace_name_follows_primary_cwd_basename() {
+        assert_eq!(
+            automatic_workspace_name("old-project", false, Some("/tmp/new-project/")),
+            Some("new-project".to_string())
+        );
+        assert_eq!(
+            automatic_workspace_name("new-project", false, Some("/tmp/new-project")),
+            None
+        );
+        assert_eq!(
+            automatic_workspace_name("project", false, Some("/")),
+            Some("/".to_string())
+        );
+    }
+
+    #[test]
+    fn automatic_workspace_name_preserves_explicit_name() {
+        assert_eq!(
+            automatic_workspace_name("custom", true, Some("/tmp/new-project")),
+            None
+        );
     }
 
     #[test]
