@@ -3,8 +3,83 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+usage() {
+    cat <<'EOF'
+Usage: ./scripts/package.sh [VERSION] [TARGET...]
+
+Build Limux release packages. When no target is specified, all package
+formats are built.
+
+Targets (may be combined):
+  --tarball    Build the .tar.gz archive
+  --deb        Build the Debian package
+  --rpm        Build the RPM package when rpmbuild is available
+  --appimage   Build the AppImage when appimagetool is available
+
+Options:
+  -h, --help   Show this help
+
+Examples:
+  ./scripts/package.sh --deb
+  ./scripts/package.sh --tarball --appimage
+EOF
+}
+
+VERSION=""
+TARGET_SELECTED=false
+BUILD_TARBALL=false
+BUILD_DEB=false
+BUILD_RPM=false
+BUILD_APPIMAGE=false
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --tarball)
+            BUILD_TARBALL=true
+            TARGET_SELECTED=true
+            ;;
+        --deb)
+            BUILD_DEB=true
+            TARGET_SELECTED=true
+            ;;
+        --rpm)
+            BUILD_RPM=true
+            TARGET_SELECTED=true
+            ;;
+        --appimage)
+            BUILD_APPIMAGE=true
+            TARGET_SELECTED=true
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --*)
+            echo "ERROR: unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+        *)
+            if [ -n "$VERSION" ]; then
+                echo "ERROR: unexpected argument: $1" >&2
+                usage >&2
+                exit 2
+            fi
+            VERSION="$1"
+            ;;
+    esac
+    shift
+done
+
+if ! $TARGET_SELECTED; then
+    BUILD_TARBALL=true
+    BUILD_DEB=true
+    BUILD_RPM=true
+    BUILD_APPIMAGE=true
+fi
+
 # Read version from workspace Cargo.toml (single source of truth)
-VERSION="${1:-$(grep '^version' "$ROOT_DIR/Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/')}"
+VERSION="${VERSION:-$(grep '^version' "$ROOT_DIR/Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/')}"
 ARCH="$(uname -m)"
 DEB_ARCH="amd64"
 [ "$ARCH" = "aarch64" ] && DEB_ARCH="arm64"
@@ -221,6 +296,12 @@ echo "=== Limux Packager ==="
 echo "Version: ${VERSION}"
 echo "Arch:    ${ARCH}"
 echo "GLIBC:   <= ${MAX_GLIBC_VERSION}"
+SELECTED_TARGETS=()
+if $BUILD_TARBALL; then SELECTED_TARGETS+=(tarball); fi
+if $BUILD_DEB; then SELECTED_TARGETS+=(deb); fi
+if $BUILD_RPM; then SELECTED_TARGETS+=(rpm); fi
+if $BUILD_APPIMAGE; then SELECTED_TARGETS+=(appimage); fi
+echo "Targets: ${SELECTED_TARGETS[*]}"
 
 if ! command -v zig >/dev/null 2>&1; then
     echo "ERROR: zig not found in PATH."
@@ -271,18 +352,20 @@ if ! GHOSTTY_TERMINFO_DIR="$(resolve_ghostty_terminfo_dir)"; then
     exit 1
 fi
 
-if ! WEBKITGTK_RUNTIME_DIR="$(resolve_webkitgtk_runtime_dir)"; then
-    echo "ERROR: WebKitGTK 6 runtime directory not found."
-    echo "Install the runtime/development package before building release artifacts:"
-    echo "  Ubuntu/Debian: sudo apt install libwebkitgtk-6.0-dev"
-    echo "  Fedora:        sudo dnf install webkitgtk6.0-devel"
-    exit 1
-fi
+if $BUILD_APPIMAGE; then
+    if ! WEBKITGTK_RUNTIME_DIR="$(resolve_webkitgtk_runtime_dir)"; then
+        echo "ERROR: WebKitGTK 6 runtime directory not found."
+        echo "Install the runtime/development package before building release artifacts:"
+        echo "  Ubuntu/Debian: sudo apt install libwebkitgtk-6.0-dev"
+        echo "  Fedora:        sudo dnf install webkitgtk6.0-devel"
+        exit 1
+    fi
 
-if ! WEBKITGTK_PROCESS_DIR="$(resolve_webkitgtk_process_dir)"; then
-    echo "ERROR: WebKitGTK 6 helper processes not found."
-    echo "Expected WebKitWebProcess from the WebKitGTK runtime package."
-    exit 1
+    if ! WEBKITGTK_PROCESS_DIR="$(resolve_webkitgtk_process_dir)"; then
+        echo "ERROR: WebKitGTK 6 helper processes not found."
+        echo "Expected WebKitWebProcess from the WebKitGTK runtime package."
+        exit 1
+    fi
 fi
 
 # Build release binary
@@ -425,6 +508,7 @@ build_rpm_package() {
 # =========================================================================
 # 1. Tarball
 # =========================================================================
+if $BUILD_TARBALL; then
 echo ""
 echo "--- Building tarball ---"
 TARBALL_STAGE="/tmp/${PKG_BASE}"
@@ -646,10 +730,12 @@ chmod 755 "$TARBALL_STAGE/install.sh"
 tar -czf "$OUT_DIR/${PKG_BASE}.tar.gz" -C /tmp "${PKG_BASE}"
 remove_tree "$TARBALL_STAGE"
 echo "  -> dist/${PKG_BASE}.tar.gz"
+fi
 
 # =========================================================================
 # 2. Debian package
 # =========================================================================
+if $BUILD_DEB; then
 echo ""
 echo "--- Building .deb ---"
 DEB_ROOT="$STAGE/deb"
@@ -721,17 +807,21 @@ chmod 755 "$DEB_ROOT/DEBIAN/postrm"
 DEB_FILE="$OUT_DIR/limux_${VERSION}_${DEB_ARCH}.deb"
 dpkg-deb --build --root-owner-group "$DEB_ROOT" "$DEB_FILE"
 echo "  -> dist/limux_${VERSION}_${DEB_ARCH}.deb"
+fi
 
 # =========================================================================
 # 3. RPM package
 # =========================================================================
-echo ""
-echo "--- Building .rpm ---"
-build_rpm_package
+if $BUILD_RPM; then
+    echo ""
+    echo "--- Building .rpm ---"
+    build_rpm_package
+fi
 
 # =========================================================================
 # 4. AppImage
 # =========================================================================
+if $BUILD_APPIMAGE; then
 echo ""
 echo "--- Building AppImage ---"
 APPDIR="$STAGE/Limux.AppDir"
@@ -971,6 +1061,7 @@ if [ -n "$APPIMAGETOOL" ]; then
     ARCH="$ARCH" "$APPIMAGETOOL" "$APPDIR" "$APPIMAGE_FILE" 2>&1 | tail -3
     echo "  -> dist/Limux-${VERSION}-${ARCH}.AppImage"
 fi
+fi
 
 # =========================================================================
 # Summary
@@ -980,7 +1071,15 @@ echo "=== Packages created in dist/ ==="
 ls -lh "$OUT_DIR"/ 2>/dev/null
 echo ""
 echo "Install options:"
-echo "  Tarball:   tar xzf dist/${PKG_BASE}.tar.gz && cd ${PKG_BASE} && sudo ./install.sh"
-echo "  Deb:       sudo dpkg -i ./dist/limux_${VERSION}_${DEB_ARCH}.deb"
-echo "  RPM:       sudo rpm -i ./dist/limux-${VERSION}-1.${RPM_ARCH}.rpm"
-echo "  AppImage:  chmod +x dist/Limux-${VERSION}-${ARCH}.AppImage && ./dist/Limux-${VERSION}-${ARCH}.AppImage"
+if $BUILD_TARBALL; then
+    echo "  Tarball:   tar xzf dist/${PKG_BASE}.tar.gz && cd ${PKG_BASE} && sudo ./install.sh"
+fi
+if $BUILD_DEB; then
+    echo "  Deb:       sudo dpkg -i ./dist/limux_${VERSION}_${DEB_ARCH}.deb"
+fi
+if $BUILD_RPM; then
+    echo "  RPM:       sudo rpm -i ./dist/limux-${VERSION}-1.${RPM_ARCH}.rpm"
+fi
+if $BUILD_APPIMAGE; then
+    echo "  AppImage:  chmod +x dist/Limux-${VERSION}-${ARCH}.AppImage && ./dist/Limux-${VERSION}-${ARCH}.AppImage"
+fi
