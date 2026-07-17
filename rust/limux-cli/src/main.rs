@@ -881,6 +881,65 @@ fn parse_hook_event(args: &[String], payload: &Value) -> String {
         .unwrap_or_else(|| "event".to_string())
 }
 
+fn agent_activity_for_hook_event(agent: agent_hooks::AgentKind, event: &str) -> Option<bool> {
+    if matches!(agent, agent_hooks::AgentKind::OpenCode) {
+        return None;
+    }
+
+    match event {
+        "UserPromptSubmit" | "prompt-submit" | "BeforeAgent" | "before-agent" => Some(true),
+        "Stop" | "stop" | "Notification" | "notification" | "AfterAgent" | "after-agent"
+        | "finished" | "SessionStart" | "session-start" | "SessionEnd" | "session-end"
+        | "Cleanup" | "cleanup" | "restore-exit" => Some(false),
+        _ => None,
+    }
+}
+
+fn agent_activity_id_for_surface(
+    agent: agent_hooks::AgentKind,
+    payload: &Value,
+    surface_id: Option<&str>,
+) -> Option<String> {
+    hook_session_id(payload)
+        .map(|session_id| format!("{}:{session_id}", agent.store_name()))
+        .or_else(|| {
+            surface_id.map(|surface_id| format!("{}:surface:{surface_id}", agent.store_name()))
+        })
+}
+
+fn agent_activity_ids_for_update(
+    agent: agent_hooks::AgentKind,
+    payload: &Value,
+    active: bool,
+) -> Vec<String> {
+    let surface_id = limux_env_value("LIMUX_SURFACE_ID");
+    agent_activity_ids_for_update_with_surface(agent, payload, surface_id.as_deref(), active)
+}
+
+fn agent_activity_ids_for_update_with_surface(
+    agent: agent_hooks::AgentKind,
+    payload: &Value,
+    surface_id: Option<&str>,
+    active: bool,
+) -> Vec<String> {
+    let primary = agent_activity_id_for_surface(agent, payload, surface_id);
+    let surface_fallback =
+        surface_id.map(|surface_id| format!("{}:surface:{surface_id}", agent.store_name()));
+    let mut ids = primary.into_iter().collect::<Vec<_>>();
+    if !active {
+        if let Some(surface_fallback) = surface_fallback {
+            if !ids.iter().any(|id| id == &surface_fallback) {
+                ids.push(surface_fallback);
+            }
+        }
+    }
+    ids
+}
+
+fn agent_hook_should_notify(event: &str) -> bool {
+    matches!(event, "Notification" | "notification")
+}
+
 /// Run an agent hook: read JSON from stdin, synthesize a notification.
 ///
 /// Args:
@@ -969,22 +1028,39 @@ async fn run_agent_hook(
         .or_else(|| env::var("LIMUX_WORKSPACE_ID").ok())
         .filter(|s| !s.is_empty());
 
-    let mut params = Map::new();
-    params.insert("title".to_string(), Value::String(title));
-    if !subtitle.is_empty() {
-        params.insert("subtitle".to_string(), Value::String(subtitle));
-    }
-    if !body.is_empty() {
-        params.insert("body".to_string(), Value::String(body));
+    if let Some(active) = agent_activity_for_hook_event(agent, &event) {
+        for activity_id in agent_activity_ids_for_update(agent, &payload, active) {
+            let _ = call_in_workspace_scope(
+                client,
+                workspace.clone(),
+                "workspace.activity.set",
+                json!({
+                    "activity_id": activity_id,
+                    "active": active,
+                }),
+            )
+            .await;
+        }
     }
 
-    let _ = call_in_workspace_scope(
-        client,
-        workspace,
-        "notification.create",
-        Value::Object(params),
-    )
-    .await;
+    if agent_hook_should_notify(&event) {
+        let mut params = Map::new();
+        params.insert("title".to_string(), Value::String(title));
+        if !subtitle.is_empty() {
+            params.insert("subtitle".to_string(), Value::String(subtitle));
+        }
+        if !body.is_empty() {
+            params.insert("body".to_string(), Value::String(body));
+        }
+
+        let _ = call_in_workspace_scope(
+            client,
+            workspace,
+            "notification.create",
+            Value::Object(params),
+        )
+        .await;
+    }
 
     Ok(agent_hook_output(&event, &payload))
 }
@@ -1471,7 +1547,7 @@ fn install_hook_target(agent: agent_hooks::AgentKind) -> Result<()> {
                 ("SessionStart", "session-start"),
                 ("UserPromptSubmit", "prompt-submit"),
                 ("Stop", "stop"),
-                ("Notification", "stop"),
+                ("Notification", "notification"),
                 ("SessionEnd", "session-end"),
             ],
         ),
@@ -1542,7 +1618,7 @@ fn install_json_hooks(
             "hooks": [{
                 "type": "command",
                 "command": hook_command(agent, limux_event)?,
-                "statusMessage": format!("Limux {} session restore", agent.label()),
+                "statusMessage": format!("Limux {} activity sync", agent.label()),
                 "timeout": hook_timeout(agent)
             }]
         });
@@ -3722,6 +3798,89 @@ mod cli_arg_tests {
         let payload = json!({ "hook_event_name": "Notification" });
 
         assert_eq!(parse_hook_event(&args, &payload), "Stop");
+    }
+
+    #[test]
+    fn agent_activity_tracks_supported_work_boundaries() {
+        assert_eq!(
+            agent_activity_for_hook_event(agent_hooks::AgentKind::Codex, "prompt-submit"),
+            Some(true)
+        );
+        assert_eq!(
+            agent_activity_for_hook_event(agent_hooks::AgentKind::Claude, "Stop"),
+            Some(false)
+        );
+        assert_eq!(
+            agent_activity_for_hook_event(agent_hooks::AgentKind::Gemini, "BeforeAgent"),
+            Some(true)
+        );
+        assert_eq!(
+            agent_activity_for_hook_event(agent_hooks::AgentKind::Gemini, "AfterAgent"),
+            Some(false)
+        );
+        assert_eq!(
+            agent_activity_for_hook_event(agent_hooks::AgentKind::Codex, "SessionStart"),
+            Some(false)
+        );
+        assert_eq!(
+            agent_activity_for_hook_event(agent_hooks::AgentKind::Codex, "PreToolUse"),
+            None
+        );
+        assert_eq!(
+            agent_activity_for_hook_event(agent_hooks::AgentKind::Claude, "notification"),
+            Some(false)
+        );
+        assert_eq!(
+            agent_activity_for_hook_event(agent_hooks::AgentKind::OpenCode, "prompt-submit"),
+            None
+        );
+    }
+
+    #[test]
+    fn agent_activity_id_prefers_session_and_falls_back_to_surface() {
+        assert_eq!(
+            agent_activity_id_for_surface(
+                agent_hooks::AgentKind::Codex,
+                &json!({ "session_id": "session-a" }),
+                Some("7:tab-a")
+            )
+            .as_deref(),
+            Some("codex:session-a")
+        );
+        assert_eq!(
+            agent_activity_id_for_surface(
+                agent_hooks::AgentKind::Codex,
+                &json!({}),
+                Some("7:tab-a")
+            )
+            .as_deref(),
+            Some("codex:surface:7:tab-a")
+        );
+    }
+
+    #[test]
+    fn inactive_activity_updates_clear_session_and_surface_ids() {
+        assert_eq!(
+            agent_activity_ids_for_update_with_surface(
+                agent_hooks::AgentKind::Codex,
+                &json!({ "session_id": "session-a" }),
+                Some("7:tab-a"),
+                false,
+            ),
+            vec![
+                "codex:session-a".to_string(),
+                "codex:surface:7:tab-a".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn hook_notifications_are_limited_to_attention_events() {
+        assert!(!agent_hook_should_notify("prompt-submit"));
+        assert!(!agent_hook_should_notify("stop"));
+        assert!(!agent_hook_should_notify("session-start"));
+        assert!(agent_hook_should_notify("Notification"));
+        assert!(agent_hook_should_notify("notification"));
     }
 
     #[test]

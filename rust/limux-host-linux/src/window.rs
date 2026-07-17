@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -29,6 +29,11 @@ use crate::split_tree::{self, SplitTreeContainer};
 
 const PANE_CREATE_COMMAND_READY_INTERVAL_MS: u64 = 50;
 const PANE_CREATE_COMMAND_READY_ATTEMPTS: u32 = 40;
+const WORKSPACE_ACTIVITY_SHIMMER_INTERVAL_MS: u64 = 45;
+const WORKSPACE_ACTIVITY_SHIMMER_STEPS: usize = 48;
+const WORKSPACE_ACTIVITY_DOT_MIN_OPACITY: f64 = 0.35;
+const WORKSPACE_ACTIVITY_TITLE_BASE_ALPHA: f64 = 0.62;
+const WORKSPACE_ACTIVITY_TITLE_BAND_RADIUS: f64 = 2.4;
 
 // ---------------------------------------------------------------------------
 // State
@@ -46,6 +51,9 @@ struct Workspace {
     sidebar_row: gtk::ListBoxRow,
     /// Name label in sidebar row.
     name_label: gtk::Label,
+    active_activities: HashSet<String>,
+    activity_shimmer_phase: Rc<Cell<usize>>,
+    activity_shimmer_source: Rc<RefCell<Option<glib::SourceId>>>,
     /// Favorite star button in sidebar row.
     favorite_button: gtk::Button,
     /// Notification dot in the sidebar row.
@@ -63,6 +71,14 @@ struct Workspace {
     /// Path label shown below workspace name in sidebar.
     #[allow(dead_code)]
     path_label: gtk::Label,
+}
+
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        if let Some(source) = self.activity_shimmer_source.borrow_mut().take() {
+            source.remove();
+        }
+    }
 }
 
 pub(crate) struct AppState {
@@ -1219,6 +1235,11 @@ row:selected .limux-ws-star-btn {
 }
 .limux-notify-dot-hidden {
     color: transparent;
+    font-size: 10px;
+    margin-right: 6px;
+}
+.limux-workspace-activity-dot {
+    color: @window_fg_color;
     font-size: 10px;
     margin-right: 6px;
 }
@@ -2983,6 +3004,125 @@ fn build_sidebar_row(
     )
 }
 
+fn update_active_activities(
+    active_activities: &mut HashSet<String>,
+    activity_id: &str,
+    active: bool,
+) -> bool {
+    if active {
+        active_activities.insert(activity_id.to_string());
+    } else {
+        active_activities.remove(activity_id);
+    }
+    !active_activities.is_empty()
+}
+
+fn workspace_activity_shimmer_opacity(phase: usize, offset: f64, min_opacity: f64) -> f64 {
+    let progress = (phase as f64 / WORKSPACE_ACTIVITY_SHIMMER_STEPS as f64 + offset) % 1.0;
+    let wave = (1.0 + (progress * std::f64::consts::TAU).cos()) / 2.0;
+    min_opacity + (1.0 - min_opacity) * wave
+}
+
+fn workspace_activity_title_shimmer_attrs(text: &str, phase: usize) -> gtk::pango::AttrList {
+    let attrs = gtk::pango::AttrList::new();
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    if chars.is_empty() {
+        return attrs;
+    }
+
+    let span = chars.len() as f64 + WORKSPACE_ACTIVITY_TITLE_BAND_RADIUS * 2.0;
+    let center = phase as f64 / WORKSPACE_ACTIVITY_SHIMMER_STEPS as f64 * span
+        - WORKSPACE_ACTIVITY_TITLE_BAND_RADIUS;
+
+    for (idx, (start, _)) in chars.iter().enumerate() {
+        let end = chars
+            .get(idx + 1)
+            .map(|(next_start, _)| *next_start)
+            .unwrap_or(text.len());
+        let distance = (idx as f64 - center).abs();
+        let band = (1.0 - distance / WORKSPACE_ACTIVITY_TITLE_BAND_RADIUS)
+            .clamp(0.0, 1.0)
+            .powi(2);
+        let alpha = WORKSPACE_ACTIVITY_TITLE_BASE_ALPHA
+            + (1.0 - WORKSPACE_ACTIVITY_TITLE_BASE_ALPHA) * band;
+        let mut attr = gtk::pango::AttrInt::new_foreground_alpha((alpha * u16::MAX as f64) as u16);
+        attr.set_start_index(*start as u32);
+        attr.set_end_index(end as u32);
+        attrs.insert(attr);
+    }
+
+    attrs
+}
+
+fn stop_workspace_activity_shimmer(workspace: &Workspace) {
+    if let Some(source) = workspace.activity_shimmer_source.borrow_mut().take() {
+        source.remove();
+    }
+    workspace.activity_shimmer_phase.set(0);
+    workspace.notify_dot.set_opacity(1.0);
+    workspace.name_label.set_opacity(1.0);
+    workspace.name_label.set_attributes(None);
+}
+
+fn start_workspace_activity_shimmer(workspace: &Workspace) {
+    if workspace.activity_shimmer_source.borrow().is_some() {
+        return;
+    }
+
+    workspace.activity_shimmer_phase.set(0);
+    workspace.notify_dot.set_label("\u{25CF}");
+    workspace.notify_dot.set_opacity(1.0);
+    workspace.name_label.set_opacity(1.0);
+    workspace.name_label.set_attributes(None);
+
+    let notify_dot = workspace.notify_dot.clone();
+    let name_label = workspace.name_label.clone();
+    let activity_shimmer_phase = workspace.activity_shimmer_phase.clone();
+    let source = glib::timeout_add_local(
+        std::time::Duration::from_millis(WORKSPACE_ACTIVITY_SHIMMER_INTERVAL_MS),
+        move || {
+            let phase = (activity_shimmer_phase.get() + 1) % WORKSPACE_ACTIVITY_SHIMMER_STEPS;
+            activity_shimmer_phase.set(phase);
+            notify_dot.set_opacity(workspace_activity_shimmer_opacity(
+                phase,
+                0.0,
+                WORKSPACE_ACTIVITY_DOT_MIN_OPACITY,
+            ));
+            let attrs = workspace_activity_title_shimmer_attrs(name_label.label().as_str(), phase);
+            name_label.set_attributes(Some(&attrs));
+            glib::ControlFlow::Continue
+        },
+    );
+    *workspace.activity_shimmer_source.borrow_mut() = Some(source);
+}
+
+fn sync_workspace_status_indicator(workspace: &Workspace) {
+    workspace
+        .notify_dot
+        .remove_css_class("limux-workspace-activity-dot");
+    workspace.notify_dot.remove_css_class("limux-notify-dot");
+    workspace
+        .notify_dot
+        .remove_css_class("limux-notify-dot-hidden");
+
+    if workspace.unread {
+        stop_workspace_activity_shimmer(workspace);
+        workspace.notify_dot.set_label("\u{25CF}");
+        workspace.notify_dot.add_css_class("limux-notify-dot");
+    } else if workspace.active_activities.is_empty() {
+        stop_workspace_activity_shimmer(workspace);
+        workspace.notify_dot.set_label("\u{25CF}");
+        workspace
+            .notify_dot
+            .add_css_class("limux-notify-dot-hidden");
+    } else {
+        workspace
+            .notify_dot
+            .add_css_class("limux-workspace-activity-dot");
+        start_workspace_activity_shimmer(workspace);
+    }
+}
+
 fn update_workspace_path_label(path_label: &gtk::Label, path: Option<&str>) {
     if let Some(path) = path.filter(|path| !path.trim().is_empty()) {
         path_label.set_label(&abbreviate_path(path));
@@ -4383,6 +4523,50 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 crate::control_bridge::BridgeError::not_found("workspace not found")
             }));
         }
+        ControlCommand::SetWorkspaceActivity {
+            target,
+            activity_id,
+            active,
+            reply,
+        } => {
+            let resolved = {
+                let app_state = state.borrow();
+                workspace_index_for_target(&app_state, &target)
+            };
+
+            let Some(index) = resolved else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "workspace not found",
+                )));
+                return;
+            };
+
+            let (workspace_id, busy, activity_count) = {
+                let mut app_state = state.borrow_mut();
+                let workspace = &mut app_state.workspaces[index];
+                let busy = update_active_activities(
+                    &mut workspace.active_activities,
+                    &activity_id,
+                    active,
+                );
+                sync_workspace_status_indicator(workspace);
+                (
+                    workspace.id.clone(),
+                    busy,
+                    workspace.active_activities.len(),
+                )
+            };
+
+            let _ = reply.send(Ok(serde_json::json!({
+                "ok": true,
+                "workspace_id": workspace_id,
+                "workspace_ref": workspace_ref(&workspace_id),
+                "activity_id": activity_id,
+                "active": active,
+                "busy": busy,
+                "activity_count": activity_count,
+            })));
+        }
         ControlCommand::SendText {
             target,
             surface_hint,
@@ -4644,6 +4828,9 @@ fn add_workspace_from_state(
         split_container,
         sidebar_row: row.clone(),
         name_label,
+        active_activities: HashSet::new(),
+        activity_shimmer_phase: Rc::new(Cell::new(0)),
+        activity_shimmer_source: Rc::new(RefCell::new(None)),
         favorite_button,
         notify_dot,
         notify_label,
@@ -4942,11 +5129,8 @@ fn switch_workspace_with_focus(state: &State, idx: usize, focus_target: Workspac
         let unread_handles = if s.workspaces[idx].unread {
             let ws = &mut s.workspaces[idx];
             ws.unread = false;
-            Some((
-                ws.notify_dot.clone(),
-                ws.notify_label.clone(),
-                ws.sidebar_row.clone(),
-            ))
+            sync_workspace_status_indicator(ws);
+            Some((ws.notify_label.clone(), ws.sidebar_row.clone()))
         } else {
             None
         };
@@ -4969,9 +5153,7 @@ fn switch_workspace_with_focus(state: &State, idx: usize, focus_target: Workspac
     refresh_active_workspace_cwd_and_subtitle(state);
     refresh_window_title(state);
 
-    if let Some((notify_dot, notify_label, sidebar_row)) = unread_handles {
-        notify_dot.remove_css_class("limux-notify-dot");
-        notify_dot.add_css_class("limux-notify-dot-hidden");
+    if let Some((notify_label, sidebar_row)) = unread_handles {
         notify_label.remove_css_class("limux-notify-msg-unread");
         notify_label.add_css_class("limux-notify-msg");
         notify_label.set_visible(false);
@@ -6021,8 +6203,7 @@ fn mark_workspace_unread_with_message(
 
         if idx != active_idx {
             ws.unread = true;
-            ws.notify_dot.remove_css_class("limux-notify-dot-hidden");
-            ws.notify_dot.add_css_class("limux-notify-dot");
+            sync_workspace_status_indicator(ws);
             ws.notify_label.set_label(message);
             ws.notify_label.remove_css_class("limux-notify-msg");
             ws.notify_label.add_css_class("limux-notify-msg-unread");
@@ -6200,7 +6381,7 @@ fn show_desktop_notification(state: &State, request: DesktopNotificationRequest)
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::rc::Rc;
 
     use super::glib;
@@ -6219,13 +6400,13 @@ mod tests {
         sanitize_background_opacity, shortcut_allowed_while_browser_find_active,
         shortcut_blocked_by_editable, shortcut_command_from_key_event,
         shortcut_dispatch_propagation, should_emit_desktop_notification, split_working_directory,
-        validate_workspace_folder_input_with_dirs, workspace_drop_layout_path,
-        workspace_folder_path_from_input, workspace_insert_index, workspace_notification_message,
-        workspace_sidebar_path, DesktopNotificationRoute, DesktopNotificationTarget, Direction,
-        EditableCaptureContext, NeighborScore, PaneBounds, PaneCreateDirection,
-        PaneCreateTargetError, PortalColorSchemePreference, SessionSaveAccess, SessionSaveRequest,
-        WorkspaceInsertMode, BASE_CSS, HOST_ENTRY_CSS_CLASS, WORKSPACE_RENAME_ENTRY_CSS_CLASS,
-        WORKSPACE_RENAME_ENTRY_CSS_CLASSES,
+        update_active_activities, validate_workspace_folder_input_with_dirs,
+        workspace_drop_layout_path, workspace_folder_path_from_input, workspace_insert_index,
+        workspace_notification_message, workspace_sidebar_path, DesktopNotificationRoute,
+        DesktopNotificationTarget, Direction, EditableCaptureContext, NeighborScore, PaneBounds,
+        PaneCreateDirection, PaneCreateTargetError, PortalColorSchemePreference, SessionSaveAccess,
+        SessionSaveRequest, WorkspaceInsertMode, BASE_CSS, HOST_ENTRY_CSS_CLASS,
+        WORKSPACE_RENAME_ENTRY_CSS_CLASS, WORKSPACE_RENAME_ENTRY_CSS_CLASSES,
     };
     use crate::layout_state::{LayoutNodeState, PaneState, SplitOrientation, SplitState};
     use crate::shortcut_config::{
@@ -6610,6 +6791,16 @@ mod tests {
             automatic_workspace_name("custom", true, Some("/tmp/new-project")),
             None
         );
+    }
+
+    #[test]
+    fn workspace_activity_stays_busy_until_every_session_finishes() {
+        let mut active = HashSet::new();
+
+        assert!(update_active_activities(&mut active, "codex:a", true));
+        assert!(update_active_activities(&mut active, "claude:b", true));
+        assert!(update_active_activities(&mut active, "codex:a", false));
+        assert!(!update_active_activities(&mut active, "claude:b", false));
     }
 
     #[test]

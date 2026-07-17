@@ -25,6 +25,7 @@ const METHODS: &[&str] = &[
     "workspace.select",
     "workspace.rename",
     "workspace.close",
+    "workspace.activity.set",
     "pane.list",
     "pane.surfaces",
     "pane.create",
@@ -155,6 +156,12 @@ pub enum ControlCommand {
         target: WorkspaceTarget,
         reply: mpsc::Sender<BridgeResult>,
     },
+    SetWorkspaceActivity {
+        target: WorkspaceTarget,
+        activity_id: String,
+        active: bool,
+        reply: mpsc::Sender<BridgeResult>,
+    },
     SendText {
         target: WorkspaceTarget,
         surface_hint: Option<String>,
@@ -195,6 +202,7 @@ impl ControlCommand {
             | Self::SelectWorkspace { reply, .. }
             | Self::RenameWorkspace { reply, .. }
             | Self::CloseWorkspace { reply, .. }
+            | Self::SetWorkspaceActivity { reply, .. }
             | Self::SendText { reply, .. }
             | Self::SendKey { reply, .. }
             | Self::CreateNotification { reply, .. } => {
@@ -597,6 +605,34 @@ fn handle_method(
             let (reply, rx) = mpsc::channel();
             (ControlCommand::CloseWorkspace { target, reply }, rx)
         }
+        "workspace.activity.set" => {
+            let Some(activity_id) = optional_string(params, &["activity_id"]) else {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params("workspace.activity.set requires activity_id"),
+                );
+            };
+            let Some(active) = params.get("active").and_then(Value::as_bool) else {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params("workspace.activity.set requires boolean active"),
+                );
+            };
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::SetWorkspaceActivity {
+                    target,
+                    activity_id,
+                    active,
+                    reply,
+                },
+                rx,
+            )
+        }
         "surface.send_text" | "send-text" | "send" => {
             let Some(text) = optional_string(params, &["text"]) else {
                 return error_response(
@@ -884,6 +920,46 @@ mod tests {
         let error = parse_required_workspace_target(&params, true, "workspace.select")
             .expect_err("workspace.select should require a target");
         assert_eq!(error.code, INVALID_PARAMS_CODE);
+    }
+
+    #[test]
+    fn workspace_activity_route_queues_session_update() {
+        let response = dispatch_request(
+            r#"{"id":1,"method":"workspace.activity.set","params":{"workspace_id":"codex","activity_id":"codex:session-a","active":true}}"#,
+            &|command| match command {
+                ControlCommand::SetWorkspaceActivity {
+                    target,
+                    activity_id,
+                    active,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Name("codex".to_string()));
+                    assert_eq!(activity_id, "codex:session-a");
+                    assert!(active);
+                    let _ = reply.send(Ok(json!({ "busy": true })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+
+        assert_eq!(response.error, None);
+        assert_eq!(response.result.expect("activity result")["busy"], true);
+    }
+
+    #[test]
+    fn workspace_activity_route_rejects_missing_or_invalid_fields() {
+        for request in [
+            r#"{"id":1,"method":"workspace.activity.set","params":{"active":true}}"#,
+            r#"{"id":1,"method":"workspace.activity.set","params":{"activity_id":"codex:session-a","active":"yes"}}"#,
+        ] {
+            let response = dispatch_request(request, &|command| {
+                panic!("invalid activity update should not dispatch: {command:?}")
+            });
+            assert_eq!(
+                response.error.as_ref().map(|error| error.code),
+                Some(INVALID_PARAMS_CODE)
+            );
+        }
     }
 
     #[test]
