@@ -127,6 +127,7 @@ pub enum RestorableAgentKind {
     Codex,
     OpenCode,
     Gemini,
+    Pi,
 }
 
 impl RestorableAgentKind {
@@ -145,6 +146,7 @@ impl RestorableAgentKind {
             Self::Codex => "codex",
             Self::OpenCode => "opencode",
             Self::Gemini => "gemini",
+            Self::Pi => "pi",
         }
     }
 
@@ -154,6 +156,7 @@ impl RestorableAgentKind {
             Self::Codex => "codex",
             Self::OpenCode => "opencode",
             Self::Gemini => "gemini",
+            Self::Pi => "pi",
         }
     }
 }
@@ -507,6 +510,7 @@ impl RestorableAgentIndex {
             (RestorableAgentKind::Codex, "codex-hook-sessions.json"),
             (RestorableAgentKind::OpenCode, "opencode-hook-sessions.json"),
             (RestorableAgentKind::Gemini, "gemini-hook-sessions.json"),
+            (RestorableAgentKind::Pi, "pi-hook-sessions.json"),
         ] {
             let path = dir.join(file_name);
             let Ok(raw) = fs::read_to_string(&path) else {
@@ -724,7 +728,7 @@ fn build_resume_command(
             parts.extend(preserved_tail);
             parts.push(session_id.clone());
         }
-        RestorableAgentKind::OpenCode => {
+        RestorableAgentKind::OpenCode | RestorableAgentKind::Pi => {
             parts.push("--session".to_string());
             parts.push(session_id.clone());
             parts.extend(preserved_tail);
@@ -853,7 +857,9 @@ fn is_resume_selector(kind: RestorableAgentKind, arg: &str) -> bool {
         RestorableAgentKind::Codex => {
             arg == "resume" || arg == "--resume" || arg.starts_with("--resume=")
         }
-        RestorableAgentKind::OpenCode => arg == "--session" || arg.starts_with("--session="),
+        RestorableAgentKind::OpenCode | RestorableAgentKind::Pi => {
+            arg == "--session" || arg.starts_with("--session=")
+        }
         RestorableAgentKind::Claude | RestorableAgentKind::Gemini => {
             arg == "--resume" || arg.starts_with("--resume=") || arg == "--continue"
         }

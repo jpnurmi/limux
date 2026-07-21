@@ -199,7 +199,7 @@ fn parse_global_args() -> Result<GlobalOptions> {
 
 fn print_help() {
     println!(
-        "limux CLI\n\nUsage: limux [--socket <path>] [--json] [--id-format refs|both|uuids] <command> [args...]\n       limux\n\nRunning `limux` with no arguments launches the GTK app.\n\nCommon commands:\n  identify [--workspace <id|ref>] [--surface <id|ref>]\n  list-panels [--workspace <id|ref>]\n  list-panes [--workspace <id|ref>]\n  list-workspaces\n  surface-health [--workspace <id|ref>]\n  send [--workspace <id|ref>] [--surface <id|ref>] <text>\n  send-key [--workspace <id|ref>] [--surface <id|ref>] <key>\n  new-workspace [--cwd <path>] [--command <text>]\n  close-workspace --workspace <id|ref>\n  sidebar-state --workspace <id|ref>\n  new-surface [--workspace <id|ref>]\n  new-pane [--workspace <id|ref>] [--pane <id|ref>] [--surface <id|ref>] [--direction <left|right|up|down>] [--type <terminal|browser>] [--command <text>] [--url <url>]\n      Live GTK self-spawn currently supports terminal panes only; browser panes remain deferred.\n  rename-workspace [--workspace <id|ref>] <title>\n  rename-window [--workspace <id|ref>] <title>\n  rename-tab [--workspace <id|ref>] [--tab <id|ref>] <title>\n  read-screen [--workspace <id|ref>] [--surface <id|ref>] [--scrollback] [--lines <n>]\n  capture-pane (alias of read-screen)\n  tab-action --action <name> [--workspace <id|ref>] [--tab <id|ref>] [--title <text>] [--url <url>]\n  browser [--surface <id|ref>|<surface>] <subcommand> ...\n\nAgent integrations:\n  notify [--workspace <id|ref>] [--subtitle <text>] [--body <text>] <title>\n  hooks setup [agent] | hooks uninstall [agent] | hooks <agent> <event>\n  claude-hook | opencode-hook | gemini-hook --event <name> [--subtitle <text>] [--body <text>] [--title <text>]\n  agent-team [--agents codex,claude[,opencode,gemini]] [--cwd <path>] [--no-launch] [--dry-run]\n      Splits the active workspace into one pane per agent (caller's pane stays\n      as the orchestrator on the left, peers stack down the right), launches\n      each CLI in its pane, and writes AGENTS.md describing the <agent-msg>\n      XML protocol so peers can talk via\n      `limux send --surface <peer-surface-id> <envelope>`.\n"
+        "limux CLI\n\nUsage: limux [--socket <path>] [--json] [--id-format refs|both|uuids] <command> [args...]\n       limux\n\nRunning `limux` with no arguments launches the GTK app.\n\nCommon commands:\n  identify [--workspace <id|ref>] [--surface <id|ref>]\n  list-panels [--workspace <id|ref>]\n  list-panes [--workspace <id|ref>]\n  list-workspaces\n  surface-health [--workspace <id|ref>]\n  send [--workspace <id|ref>] [--surface <id|ref>] <text>\n  send-key [--workspace <id|ref>] [--surface <id|ref>] <key>\n  new-workspace [--cwd <path>] [--command <text>]\n  close-workspace --workspace <id|ref>\n  sidebar-state --workspace <id|ref>\n  new-surface [--workspace <id|ref>]\n  new-pane [--workspace <id|ref>] [--pane <id|ref>] [--surface <id|ref>] [--direction <left|right|up|down>] [--type <terminal|browser>] [--command <text>] [--url <url>]\n      Live GTK self-spawn currently supports terminal panes only; browser panes remain deferred.\n  rename-workspace [--workspace <id|ref>] <title>\n  rename-window [--workspace <id|ref>] <title>\n  rename-tab [--workspace <id|ref>] [--tab <id|ref>] <title>\n  read-screen [--workspace <id|ref>] [--surface <id|ref>] [--scrollback] [--lines <n>]\n  capture-pane (alias of read-screen)\n  tab-action --action <name> [--workspace <id|ref>] [--tab <id|ref>] [--title <text>] [--url <url>]\n  browser [--surface <id|ref>|<surface>] <subcommand> ...\n\nAgent integrations:\n  notify [--workspace <id|ref>] [--subtitle <text>] [--body <text>] <title>\n  hooks setup [agent] | hooks uninstall [agent] | hooks <agent> <event>\n  claude-hook | opencode-hook | gemini-hook --event <name> [--subtitle <text>] [--body <text>] [--title <text>]\n  agent-team [--agents codex,claude[,opencode,gemini,pi]] [--cwd <path>] [--no-launch] [--dry-run]\n      Splits the active workspace into one pane per agent (caller's pane stays\n      as the orchestrator on the left, peers stack down the right), launches\n      each CLI in its pane, and writes AGENTS.md describing the <agent-msg>\n      XML protocol so peers can talk via\n      `limux send --surface <peer-surface-id> <envelope>`.\n"
     );
 }
 
@@ -1526,6 +1526,7 @@ fn default_hook_targets() -> Vec<agent_hooks::AgentKind> {
         agent_hooks::AgentKind::Codex,
         agent_hooks::AgentKind::Claude,
         agent_hooks::AgentKind::Gemini,
+        agent_hooks::AgentKind::Pi,
     ]
 }
 
@@ -1562,6 +1563,7 @@ fn install_hook_target(agent: agent_hooks::AgentKind) -> Result<()> {
                 ("SessionEnd", "session-end"),
             ],
         ),
+        agent_hooks::AgentKind::Pi => install_pi_extension(),
     }
 }
 
@@ -1578,6 +1580,14 @@ fn uninstall_hook_target(agent: agent_hooks::AgentKind) -> Result<()> {
             opencode_config_unregister_plugin()
         }
         agent_hooks::AgentKind::Gemini => uninstall_json_hooks(&gemini_settings_path(), agent),
+        agent_hooks::AgentKind::Pi => {
+            let path = pi_extension_path();
+            if path.exists() {
+                fs::remove_file(&path)
+                    .with_context(|| format!("failed to remove {}", path.display()))?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -1636,6 +1646,7 @@ fn hook_timeout(agent: agent_hooks::AgentKind) -> u64 {
         agent_hooks::AgentKind::Claude => 5,
         agent_hooks::AgentKind::Codex | agent_hooks::AgentKind::Gemini => 5000,
         agent_hooks::AgentKind::OpenCode => 0,
+        agent_hooks::AgentKind::Pi => 0,
     }
 }
 
@@ -1669,6 +1680,15 @@ fn install_opencode_plugin() -> Result<()> {
     }
     fs::write(&path, opencode_plugin_source()?).context("failed to write OpenCode plugin")?;
     opencode_config_register_plugin(&path)
+}
+
+fn install_pi_extension() -> Result<()> {
+    let path = pi_extension_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, pi_extension_source()?).context("failed to write Pi extension")
 }
 
 fn opencode_config_register_plugin(plugin_path: &Path) -> Result<()> {
@@ -1748,6 +1768,7 @@ fn hook_marker(agent: agent_hooks::AgentKind) -> &'static str {
         agent_hooks::AgentKind::Codex => "hooks codex",
         agent_hooks::AgentKind::OpenCode => "hooks opencode",
         agent_hooks::AgentKind::Gemini => "hooks gemini",
+        agent_hooks::AgentKind::Pi => "hooks pi",
     }
 }
 
@@ -1827,8 +1848,127 @@ fn opencode_config_path() -> PathBuf {
     opencode_config_dir().join("config.json")
 }
 
+fn pi_agent_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".pi/agent")
+}
+
+fn pi_extension_path() -> PathBuf {
+    pi_agent_dir().join("extensions/limux-session.ts")
+}
+
 fn opencode_plugin_source() -> Result<String> {
     opencode_plugin_source_with_command(&opencode_plugin_cli_command()?)
+}
+
+fn pi_extension_source() -> Result<String> {
+    pi_extension_source_with_command(&opencode_plugin_cli_command()?)
+}
+
+fn pi_extension_source_with_command(limux_command: &str) -> Result<String> {
+    let limux_command_json =
+        serde_json::to_string(limux_command).context("failed to encode Pi hook command")?;
+    Ok(
+        r#"// limux-pi-session-extension v1
+// Installed by `limux hooks pi install`. Do not edit manually.
+
+import { spawnSync } from "node:child_process";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { basename, join } from "node:path";
+
+const LIMUX_COMMAND = __LIMUX_COMMAND__;
+
+function debug(outcome, details = {}) {
+  if (process.env.LIMUX_PI_HOOK_DEBUG !== "1" && outcome !== "spawn_failed") return;
+  try {
+    const dir = process.env.LIMUX_AGENT_HOOK_STATE_DIR || (process.env.XDG_STATE_HOME ? join(process.env.XDG_STATE_HOME, "limux") : join(process.env.HOME || ".", ".local/state/limux"));
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, "pi-extension-debug.jsonl"), JSON.stringify({
+      time: Date.now() / 1000,
+      outcome,
+      details
+    }) + "\n");
+  } catch (_) {}
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
+function sessionId(ctx) {
+  const fromManager = firstString(ctx && ctx.sessionManager && ctx.sessionManager.getSessionId && ctx.sessionManager.getSessionId());
+  if (fromManager) return fromManager;
+  const file = firstString(ctx && ctx.sessionManager && ctx.sessionManager.getSessionFile && ctx.sessionManager.getSessionFile());
+  if (!file) return null;
+  const match = basename(file).match(/[0-9a-fA-F-]{8,}/);
+  return match ? match[0] : null;
+}
+
+function cwd(ctx) {
+  return firstString(ctx && ctx.cwd, process.cwd());
+}
+
+function launchExecutable() {
+  return firstString(process.env.LIMUX_PI_EXECUTABLE, "pi");
+}
+
+function launchArgv() {
+  return [launchExecutable(), ...process.argv.slice(2)].join("\0");
+}
+
+function send(kind, event, ctx) {
+  if (process.env.LIMUX_PI_HOOKS_DISABLED === "1") {
+    debug("skip_disabled", { kind });
+    return;
+  }
+  if (!process.env.LIMUX_SURFACE_ID) {
+    debug("skip_missing_surface", { kind, hasWorkspace: !!process.env.LIMUX_WORKSPACE_ID });
+    return;
+  }
+  const sid = sessionId(ctx);
+  if (!sid) {
+    debug("skip_missing_session", { kind, eventKeys: Object.keys(event || {}) });
+    return;
+  }
+  const payload = {
+    session_id: sid,
+    cwd: cwd(ctx),
+    hook_event_name: kind,
+    event: kind
+  };
+  try {
+    const command = process.env.LIMUX_BIN || LIMUX_COMMAND;
+    const result = spawnSync(command, ["hooks", "pi", kind], {
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+      stdio: ["pipe", "ignore", "ignore"],
+      timeout: 5000,
+      env: {
+        ...process.env,
+        LIMUX_AGENT_LAUNCH_ARGV: launchArgv(),
+        LIMUX_AGENT_LAUNCH_EXECUTABLE: launchExecutable(),
+        LIMUX_AGENT_LAUNCH_CWD: cwd(ctx)
+      }
+    });
+    debug("spawned", { kind, status: result.status, error: result.error && String(result.error), command });
+  } catch (error) {
+    debug("spawn_failed", { kind, error: String(error) });
+  }
+}
+
+export default function limuxPiSessionExtension(pi) {
+  pi.on("session_start", async (event, ctx) => send("session-start", event, ctx));
+  pi.on("agent_start", async (event, ctx) => send("prompt-submit", event, ctx));
+  pi.on("agent_settled", async (event, ctx) => send("stop", event, ctx));
+  pi.on("session_shutdown", async (event, ctx) => send("session-end", event, ctx));
+}
+"#
+        .replace("__LIMUX_COMMAND__", &limux_command_json),
+    )
 }
 
 fn opencode_plugin_source_with_command(limux_command: &str) -> Result<String> {
@@ -2020,6 +2160,7 @@ fn agent_launch_command(agent: &str) -> Option<(&'static str, String)> {
         "claude" | "claude-code" => Some(("claude", "claude".to_string())),
         "opencode" => Some(("opencode", "opencode".to_string())),
         "gemini" | "gemini-cli" => Some(("gemini", "gemini".to_string())),
+        "pi" | "pi-coding-agent" => Some(("pi", "pi".to_string())),
         _ => None,
     }
 }
@@ -3915,9 +4056,20 @@ mod cli_arg_tests {
                 agent_hooks::AgentKind::Codex,
                 agent_hooks::AgentKind::Claude,
                 agent_hooks::AgentKind::Gemini,
+                agent_hooks::AgentKind::Pi,
             ]
         );
         assert!(!default_hook_targets().contains(&agent_hooks::AgentKind::OpenCode));
+    }
+
+    #[test]
+    fn pi_extension_embeds_installer_cli_command() {
+        let source = pi_extension_source_with_command("/tmp/limux-cli").expect("extension source");
+
+        assert!(source.contains("const LIMUX_COMMAND = \"/tmp/limux-cli\";"));
+        assert!(source.contains("process.env.LIMUX_BIN || LIMUX_COMMAND"));
+        assert!(source.contains("pi.on(\"agent_start\""));
+        assert!(source.contains("spawnSync(command, [\"hooks\", \"pi\", kind]"));
     }
 
     #[test]
@@ -4082,6 +4234,8 @@ mod agent_team_tests {
             "opencode",
             "gemini",
             "gemini-cli",
+            "pi",
+            "pi-coding-agent",
         ] {
             assert!(
                 agent_launch_command(agent).is_some(),

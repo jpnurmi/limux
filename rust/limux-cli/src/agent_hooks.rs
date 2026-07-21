@@ -14,6 +14,7 @@ pub(crate) enum AgentKind {
     Codex,
     OpenCode,
     Gemini,
+    Pi,
 }
 
 impl AgentKind {
@@ -23,6 +24,7 @@ impl AgentKind {
             "codex" => Some(Self::Codex),
             "opencode" | "open-code" => Some(Self::OpenCode),
             "gemini" => Some(Self::Gemini),
+            "pi" | "pi-coding-agent" => Some(Self::Pi),
             _ => None,
         }
     }
@@ -33,6 +35,7 @@ impl AgentKind {
             Self::Codex => "codex",
             Self::OpenCode => "opencode",
             Self::Gemini => "gemini",
+            Self::Pi => "pi",
         }
     }
 
@@ -42,6 +45,7 @@ impl AgentKind {
             Self::Codex => "Codex",
             Self::OpenCode => "OpenCode",
             Self::Gemini => "Gemini",
+            Self::Pi => "Pi",
         }
     }
 
@@ -51,6 +55,7 @@ impl AgentKind {
             Self::Codex => "codex",
             Self::OpenCode => "opencode",
             Self::Gemini => "gemini",
+            Self::Pi => "pi",
         }
     }
 }
@@ -268,7 +273,7 @@ pub(crate) fn build_resume_command(
             parts.extend(preserved_tail);
             parts.push(session_id);
         }
-        AgentKind::OpenCode => {
+        AgentKind::OpenCode | AgentKind::Pi => {
             parts.push("--session".to_string());
             parts.push(session_id);
             parts.extend(preserved_tail);
@@ -364,7 +369,7 @@ fn shell_single_quote(value: &str) -> String {
 fn is_resume_selector(kind: AgentKind, arg: &str) -> bool {
     match kind {
         AgentKind::Codex => arg == "resume" || arg == "--resume" || arg.starts_with("--resume="),
-        AgentKind::OpenCode => arg == "--session" || arg.starts_with("--session="),
+        AgentKind::OpenCode | AgentKind::Pi => arg == "--session" || arg.starts_with("--session="),
         AgentKind::Claude | AgentKind::Gemini => {
             arg == "--resume" || arg.starts_with("--resume=") || arg == "--continue"
         }
