@@ -16,6 +16,7 @@ use libadwaita as adw;
 use std::path::{Path, PathBuf};
 
 pub(crate) const APP_ID: &str = "dev.limux.linux";
+pub(crate) const POPOVER_MENU_CSS_CLASS: &str = "limux-popover-menu";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Append a value to an environment variable (comma-separated), or set it.

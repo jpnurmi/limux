@@ -532,12 +532,9 @@ pub fn create_pane(
     let action_popover = gtk::Popover::new();
     let action_popover_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .margin_top(4)
-        .margin_bottom(4)
-        .margin_start(4)
-        .margin_end(4)
         .spacing(2)
         .build();
+    action_popover_box.add_css_class(crate::POPOVER_MENU_CSS_CLASS);
 
     let menu_term_btn = menu_item("New terminal tab");
     action_popover_box.append(&menu_term_btn);
@@ -595,12 +592,9 @@ pub fn create_pane(
     let float_action_popover = gtk::Popover::new();
     let float_action_popover_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .margin_top(4)
-        .margin_bottom(4)
-        .margin_start(4)
-        .margin_end(4)
         .spacing(2)
         .build();
+    float_action_popover_box.add_css_class(crate::POPOVER_MENU_CSS_CLASS);
 
     let float_menu_term_btn = menu_item("New terminal tab");
     float_action_popover_box.append(&float_menu_term_btn);
@@ -2357,10 +2351,7 @@ fn build_tab_button_from_label(
 fn show_tab_context_menu(tab_btn: &gtk::Box, tab_id: &str, context: &TabContextMenuContext) {
     let menu = gtk::PopoverMenu::from_model(None::<&gtk::gio::MenuModel>);
     let menu_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    menu_box.set_margin_top(4);
-    menu_box.set_margin_bottom(4);
-    menu_box.set_margin_start(4);
-    menu_box.set_margin_end(4);
+    menu_box.add_css_class(crate::POPOVER_MENU_CSS_CLASS);
 
     // Rename
     let rename_btn = gtk::Button::with_label("Rename");

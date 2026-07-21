@@ -1190,6 +1190,19 @@ const BASE_CSS: &str = r#"
 .limux-host-entry image {
     color: var(--limux-host-entry-placeholder);
 }
+.limux-popover-menu > button {
+    min-height: 0;
+    min-width: 150px;
+    padding: 5px 14px;
+    border-radius: 4px;
+}
+.limux-popover-menu > button label {
+    font-weight: normal;
+}
+.limux-popover-menu > separator {
+    margin-top: 2px;
+    margin-bottom: 2px;
+}
 .limux-sidebar {
     background-color: alpha(@window_bg_color, 0.95);
     color: @window_fg_color;
@@ -3283,10 +3296,7 @@ fn next_active_workspace_index(
 
 fn show_workspace_context_menu(state: &State, workspace_id: &str, row: &gtk::ListBoxRow) {
     let menu_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    menu_box.set_margin_top(4);
-    menu_box.set_margin_bottom(4);
-    menu_box.set_margin_start(4);
-    menu_box.set_margin_end(4);
+    menu_box.add_css_class(crate::POPOVER_MENU_CSS_CLASS);
 
     let rename_btn = gtk::Button::with_label("Rename");
     rename_btn.add_css_class("flat");

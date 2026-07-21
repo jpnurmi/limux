@@ -2062,16 +2062,27 @@ fn build_floating_popover(
     popover
 }
 
-/// 4 px box wrapper that matches the inner margin used by the right-click
-/// context menu items. Reused for the hover preview so both popovers have
-/// the same visual breathing room around their content.
 fn build_popover_inner_box() -> gtk::Box {
-    let menu_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    menu_box.set_margin_top(4);
-    menu_box.set_margin_bottom(4);
-    menu_box.set_margin_start(4);
-    menu_box.set_margin_end(4);
+    let menu_box = build_popover_box();
+    set_popover_box_margin(&menu_box, 4);
     menu_box
+}
+
+fn build_popover_menu_box() -> gtk::Box {
+    let menu_box = build_popover_box();
+    menu_box.add_css_class(crate::POPOVER_MENU_CSS_CLASS);
+    menu_box
+}
+
+fn build_popover_box() -> gtk::Box {
+    gtk::Box::new(gtk::Orientation::Vertical, 0)
+}
+
+fn set_popover_box_margin(menu_box: &gtk::Box, margin: i32) {
+    menu_box.set_margin_top(margin);
+    menu_box.set_margin_bottom(margin);
+    menu_box.set_margin_start(margin);
+    menu_box.set_margin_end(margin);
 }
 
 fn show_terminal_context_menu(
@@ -2082,7 +2093,7 @@ fn show_terminal_context_menu(
     x: f64,
     y: f64,
 ) {
-    let menu_box = build_popover_inner_box();
+    let menu_box = build_popover_menu_box();
 
     let has_selection = surface
         .map(|s| unsafe { ghostty_surface_has_selection(s) })
@@ -2104,13 +2115,10 @@ fn show_terminal_context_menu(
 
     let identity = (callbacks.borrow().identity)();
     let ids_popover = gtk::Popover::new();
+    ids_popover.set_autohide(false);
     ids_popover.set_has_arrow(false);
     ids_popover.set_position(gtk::PositionType::Right);
-    let ids_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    ids_box.set_margin_top(4);
-    ids_box.set_margin_bottom(4);
-    ids_box.set_margin_start(4);
-    ids_box.set_margin_end(4);
+    let ids_box = build_popover_menu_box();
     let copy_workspace_btn = gtk::Button::with_label("Copy Workspace ID");
     copy_workspace_btn.add_css_class("flat");
     copy_workspace_btn.set_sensitive(identity.workspace_id.is_some());
@@ -2128,13 +2136,24 @@ fn show_terminal_context_menu(
     for (label, enabled) in &items {
         if *label == "---" {
             let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
-            sep.set_margin_top(4);
-            sep.set_margin_bottom(4);
+            sep.set_margin_top(2);
+            sep.set_margin_bottom(2);
             menu_box.append(&sep);
             continue;
         }
 
-        let btn = gtk::Button::with_label(if *label == "IDs" { "IDs >" } else { label });
+        let btn = if *label == "IDs" {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let text = gtk::Label::new(Some("IDs"));
+            text.set_xalign(0.0);
+            text.set_hexpand(true);
+            let indicator = gtk::Image::from_icon_name("go-next-symbolic");
+            row.append(&text);
+            row.append(&indicator);
+            gtk::Button::builder().child(&row).build()
+        } else {
+            gtk::Button::with_label(label)
+        };
         btn.add_css_class("flat");
         btn.set_sensitive(*enabled);
         btn.set_halign(gtk::Align::Fill);
@@ -2170,7 +2189,7 @@ fn show_terminal_context_menu(
             let gl_area = gl_area.clone();
 
             btn.connect_clicked(move |_| {
-                if label == "IDs >" {
+                if label.is_empty() {
                     return;
                 }
                 pop.popdown();
