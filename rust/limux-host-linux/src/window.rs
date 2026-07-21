@@ -2977,7 +2977,6 @@ fn build_sidebar_row(
     let top_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     top_row.append(&notify_dot);
     top_row.append(&name_label);
-    top_row.append(&favorite_button);
 
     let path_label = gtk::Label::builder()
         .xalign(0.0)
